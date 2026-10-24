@@ -8,6 +8,7 @@ type Entry = {
   sentence_id: string;
   start_index: number;
   end_index: number;
+  part_of_speech: string;
 };
 
 type EntryInput = Omit<Entry, "id">;
@@ -15,10 +16,10 @@ type EntryInput = Omit<Entry, "id">;
 type FieldError = { error: string };
 
 const COLUMNS =
-  "id, input_text, definition, media_id, sentence_id, start_index, end_index";
+  "id, input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech";
 
 const PUBLIC_COLUMNS =
-  "input_text, definition, media_id, sentence_id, start_index, end_index";
+  "input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech";
 
 const entries = new Hono<{ Bindings: CloudflareBindings }>();
 
@@ -120,8 +121,8 @@ entries.post("/", async (c) => {
 
   try {
     const row = await c.env.DB.prepare(
-      `INSERT INTO entries (input_text, definition, media_id, sentence_id, start_index, end_index)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO entries (input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        RETURNING ${COLUMNS}`,
     )
       .bind(
@@ -131,6 +132,7 @@ entries.post("/", async (c) => {
         input.sentence_id,
         input.start_index,
         input.end_index,
+        input.part_of_speech,
       )
       .first<Entry>();
 
@@ -154,7 +156,7 @@ entries.put("/:id", async (c) => {
   try {
     const row = await c.env.DB.prepare(
       `UPDATE entries
-       SET input_text = ?, definition = ?, media_id = ?, sentence_id = ?, start_index = ?, end_index = ?
+       SET input_text = ?, definition = ?, media_id = ?, sentence_id = ?, start_index = ?, end_index = ?, part_of_speech = ?
        WHERE id = ?
        RETURNING ${COLUMNS}`,
     )
@@ -165,6 +167,7 @@ entries.put("/:id", async (c) => {
         input.sentence_id,
         input.start_index,
         input.end_index,
+        input.part_of_speech,
         id,
       )
       .first<Entry>();
@@ -216,6 +219,8 @@ function parseEntry(value: unknown): EntryInput | FieldError {
   if (endIndex < startIndex) {
     return { error: "end_index must be greater than or equal to start_index" };
   }
+  const partOfSpeech = requiredText(body.part_of_speech, "part_of_speech", true);
+  if (isFieldError(partOfSpeech)) return partOfSpeech;
 
   return {
     input_text: inputText,
@@ -224,6 +229,7 @@ function parseEntry(value: unknown): EntryInput | FieldError {
     sentence_id: sentenceId,
     start_index: startIndex,
     end_index: endIndex,
+    part_of_speech: partOfSpeech,
   };
 }
 

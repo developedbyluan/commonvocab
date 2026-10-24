@@ -1,5 +1,5 @@
 # Cloudflare plugin addition
-_Exported on 10/24/2026 at 12:54:00 GMT+7 from Cursor (3.27.12)_
+_Exported on 10/24/2026 at 15:18:37 GMT+7 from Cursor (3.27.12)_
 
 ---
 
@@ -437,4 +437,65 @@ The other files in that folder are helpers, not a second copy of your data:
 
 - `metadata.sqlite` is Wrangler's list of local D1 databases.
 - The `.sqlite-wal` and `.sqlite-shm` files are temporary files SQLite uses while writing.
+
+---
+
+**User**
+
+I follow your guide on 3. Teach the Worker about the column and update the file @src/entries.ts .
+I want you to review the file and see if what I did is correct?
+
+---
+
+**Cursor**
+
+I’ll review `src/entries.ts` against the `part_of_speech` migration and check that every read and write includes the new column.
+
+The `part_of_speech` wiring in `src/entries.ts` is correct. Every route that reads or writes an entry includes the new column, and the `INSERT` and `UPDATE` placeholders line up with the bound values.
+
+The type and both column lists include it:
+
+```3:22:src/entries.ts
+type Entry = {
+  id: number;
+  input_text: string;
+  definition: string;
+  media_id: string;
+  sentence_id: string;
+  start_index: number;
+  end_index: number;
+  part_of_speech: string;
+};
+// ...
+const COLUMNS =
+  "id, input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech";
+
+const PUBLIC_COLUMNS =
+  "input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech";
+```
+
+`GET /entries`, `GET /entries/lookup`, `GET /entries/:id`, and `DELETE` all select through those lists, so the field comes back in the JSON. Create and update write it too: seven columns, seven `?` placeholders, and `input.part_of_speech` is bound in that same position. On update, `id` stays last in `.bind(...)`, which matches `WHERE id = ?`.
+
+`parseEntry` requires a non-empty string and trims it, so `" noun "` is stored as `"noun"`. A missing or blank value returns 400 before the query runs.
+
+Two consequences are outside this file:
+
+- The row already in the local database was created before the column existed, so its `part_of_speech` is `""`. A later `GET` will show that empty string. A `PUT` has to send a real value, because the route rejects a blank one even though the database default is `''`.
+- This migration was applied with `--local` only. The remote `commonvocab` database still lacks the column, so deploy the Worker after `npx wrangler d1 migrations apply commonvocab --remote`.
+
+---
+
+**User**
+
+basically, nothing should be changed, right? I've done it right, right?
+
+---
+
+**Cursor**
+
+Yes. `src/entries.ts` is done, and the column wiring does not need another edit.
+
+The local database already has `part_of_speech` from the migration you applied. The Worker now reads and writes that column on every entry route.
+
+The remote database is the one step still waiting: `npx wrangler d1 migrations apply commonvocab --remote`. That command updates the deployed database. It does not require another change in this file.
 
