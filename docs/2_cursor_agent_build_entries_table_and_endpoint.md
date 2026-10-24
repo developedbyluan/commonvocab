@@ -1,5 +1,5 @@
 # Cloudflare plugin addition
-_Exported on 10/24/2026 at 15:18:37 GMT+7 from Cursor (3.27.12)_
+_Exported on 10/24/2026 at 22:07:00 GMT+7 from Cursor (3.27.12)_
 
 ---
 
@@ -498,4 +498,69 @@ Yes. `src/entries.ts` is done, and the column wiring does not need another edit.
 The local database already has `part_of_speech` from the migration you applied. The Worker now reads and writes that column on every entry route.
 
 The remote database is the one step still waiting: `npx wrangler d1 migrations apply commonvocab --remote`. That command updates the deployed database. It does not require another change in this file.
+
+---
+
+**User**
+
+teach me how to add a new column which only has 3 values: pending, processing, completed
+
+---
+
+**Cursor**
+
+Add a `status` column in a new migration, and make the database reject every value except those three. Leave `0002_add_part_of_speech.sql` unchanged, because Wrangler has already applied it.
+
+## 1. Create `migrations/0003_add_status.sql`
+
+```sql
+ALTER TABLE entries
+ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'
+CHECK (status IN ('pending', 'processing', 'completed'));
+```
+
+`TEXT` stores the word. `NOT NULL DEFAULT 'pending'` fills the row you already have, so that row becomes `pending`. The `CHECK` is the rule that makes the column accept only those three spellings. SQLite compares them exactly, so `Pending` is rejected.
+
+## 2. Apply the migration
+
+The local database used by `bun run dev`:
+
+```bash
+npx wrangler d1 migrations apply commonvocab --local
+```
+
+The remote database:
+
+```bash
+npx wrangler d1 migrations apply commonvocab --remote
+```
+
+## 3. Teach the Worker the same three values
+
+In `src/entries.ts`, follow the same path you used for `part_of_speech`.
+
+Add the field to `Entry`:
+
+```ts
+status: "pending" | "processing" | "completed";
+```
+
+Add `status` to the end of `COLUMNS` and `PUBLIC_COLUMNS`. Then add it to the `INSERT` column list, the `UPDATE` assignment, and both `.bind(...)` calls.
+
+In `parseEntry`, accept only those three strings:
+
+```ts
+const STATUSES = ["pending", "processing", "completed"] as const;
+
+function requiredStatus(
+  value: unknown,
+): (typeof STATUSES)[number] | FieldError {
+  if (typeof value !== "string" || !STATUSES.includes(value as (typeof STATUSES)[number])) {
+    return { error: "status must be pending, processing, or completed" };
+  }
+  return value as (typeof STATUSES)[number];
+}
+```
+
+Call `requiredStatus(body.status)` beside the `part_of_speech` check, and put `status` on the object `parseEntry` returns. A body that omits `status`, or sends `"done"`, then gets a 400 from the Worker. A value that somehow reaches D1 still fails the `CHECK`.
 
