@@ -2,6 +2,12 @@ import { Hono } from "hono";
 
 const app = new Hono();
 
+type Match = {
+  sentence: string;
+  start: number;
+  end: number;
+};
+
 const EXAMPLES = [
   "God, it was worth it.",
   "Do you think it was worth it?",
@@ -28,34 +34,25 @@ app.get("/commonvocab", (c) => {
 
 export default app;
 
-function highlight(sentence: string, phrase: string): string | null {
+function locate(sentence: string, phrase: string): Match | null {
   /**
-   * Highlights the first occurrence of a phrase within a sentence by wrapping it in double asterisks (**).
-   * The search is case-insensitive. If the matched phrase is immediately followed by punctuation (.,!?;:),
-   * the highlight will include those punctuation marks as well.
+   * Finds the starting and ending index of a phrase within a sentence (case-insensitive).
+   * Returns a Match object with the original sentence, start and end indices, or null if not found.
    *
    * @param sentence - The sentence to search within.
-   * @param phrase - The phrase to highlight.
-   * @returns The sentence with the matched phrase highlighted, or null if not found.
+   * @param phrase - The phrase to locate in the sentence.
+   * @returns {Match | null} The match information or null if the phrase is not found.
    */
-  const index = sentence.toLowerCase().indexOf(phrase.toLowerCase());
-  if (index === -1) return null;
-
-  let end = index + phrase.length;
-  while (end < sentence.length && ".,!?;:".includes(sentence[end])) {
-    end++;
-  }
-
-  return (
-    sentence.slice(0, index) +
-    "**" +
-    sentence.slice(index, end) +
-    "**" +
-    sentence.slice(end)
-  );
+  const start = sentence.toLowerCase().indexOf(phrase.toLowerCase());
+  if (start === -1) return null;
+  return {
+    sentence,
+    start,
+    end: start + phrase.length,
+  };
 }
 
-function findMatches(text: string): string[] {
+function findMatches(text: string): Match[] {
   /**
    * Finds all example sentences that contain the given text (case-insensitive),
    * highlights the first occurrence of the text in each sentence,
@@ -65,7 +62,7 @@ function findMatches(text: string): string[] {
    * @returns An array of sentences with the phrase highlighted. Sentences that don't contain the phrase are omitted.
    */
   return EXAMPLES.flatMap((sentence) => {
-    const highlighted = highlight(sentence, text);
-    return highlighted === null ? [] : [highlighted];
+    const match = locate(sentence, text);
+    return match === null ? [] : [match];
   });
 }
