@@ -1,9 +1,14 @@
 import { Hono } from "hono";
 
+type Definition = {
+  vietnamese: string;
+  english: string;
+};
+
 type Entry = {
   id: number;
   input_text: string;
-  definition: string;
+  definition: Definition;
   media_id: string;
   sentence_id: string;
   start_index: number;
@@ -13,6 +18,8 @@ type Entry = {
 };
 
 type EntryInput = Omit<Entry, "id">;
+
+type StoredEntry = Omit<Entry, "definition"> & { definition: string };
 
 type FieldError = { error: string };
 
@@ -47,9 +54,9 @@ entries.get("/", async (c) => {
        LIMIT ?4 OFFSET ?5`,
     )
       .bind(inputText, mediaId, sentenceId, limit, offset)
-      .all<Entry>();
+      .all<StoredEntry>();
 
-    return c.json(results);
+    return c.json(results.map(withDefinition));
   } catch (error) {
     return databaseError(c, error);
   }
@@ -88,13 +95,13 @@ entries.get("/lookup", async (c) => {
        LIMIT 1`,
     )
       .bind(mediaId, sentenceId, startIndex, endIndex)
-      .first<EntryInput>();
+      .first<StoredEntry>();
 
     if (!row) return c.json({ error: "entry not found" }, 404);
     const sameText =
       row.input_text.trim().toLowerCase() === inputText.toLowerCase();
     if (!sameText) return c.json({ error: "input text does not match" }, 400);
-    return c.json(row);
+    return c.json(withDefinition(row));
   } catch (error) {
     return databaseError(c, error);
   }
@@ -128,7 +135,7 @@ entries.post("/", async (c) => {
     )
       .bind(
         input.input_text,
-        input.definition,
+        JSON.stringify(input.definition),
         input.media_id,
         input.sentence_id,
         input.start_index,
@@ -136,10 +143,10 @@ entries.post("/", async (c) => {
         input.part_of_speech,
         input.status,
       )
-      .first<Entry>();
+      .first<StoredEntry>();
 
     if (!row) return c.json({ error: "database query failed" }, 500);
-    return c.json(row, 201);
+    return c.json(withDefinition(row), 201);
   } catch (error) {
     return databaseError(c, error);
   }
@@ -164,7 +171,7 @@ entries.put("/:id", async (c) => {
     )
       .bind(
         input.input_text,
-        input.definition,
+        JSON.stringify(input.definition),
         input.media_id,
         input.sentence_id,
         input.start_index,
@@ -173,10 +180,10 @@ entries.put("/:id", async (c) => {
         input.status,
         id,
       )
-      .first<Entry>();
+      .first<StoredEntry>();
 
     if (!row) return c.json({ error: "entry not found" }, 404);
-    return c.json(row);
+    return c.json(withDefinition(row));
   } catch (error) {
     return databaseError(c, error);
   }
@@ -192,10 +199,10 @@ entries.delete("/:id", async (c) => {
       `DELETE FROM entries WHERE id = ? RETURNING ${COLUMNS}`,
     )
       .bind(id)
-      .first<Entry>();
+      .first<StoredEntry>();
 
     if (!row) return c.json({ error: "entry not found" }, 404);
-    return c.json(row);
+    return c.json(withDefinition(row));
   } catch (error) {
     return databaseError(c, error);
   }
@@ -220,7 +227,7 @@ function parseEntry(value: unknown): EntryInput | FieldError {
   const body = value as Record<string, unknown>;
   const inputText = requiredText(body.input_text, "input_text", false);
   if (isFieldError(inputText)) return inputText;
-  const definition = requiredText(body.definition, "definition", true);
+  const definition = requiredDefinition(body.definition);
   if (isFieldError(definition)) return definition;
   const mediaId = requiredText(body.media_id, "media_id", true);
   if (isFieldError(mediaId)) return mediaId;
@@ -252,6 +259,18 @@ function parseEntry(value: unknown): EntryInput | FieldError {
     part_of_speech: partOfSpeech,
     status: status,
   };
+}
+
+function requiredDefinition(value: unknown): Definition | FieldError {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { error: "definition must be an object" };
+  }
+  const body = value as Record<string, unknown>;
+  const vietnamese = requiredText(body.vietnamese, "definition.vietnamese", true);
+  if (isFieldError(vietnamese)) return vietnamese;
+  const english = requiredText(body.english, "definition.english", true);
+  if (isFieldError(english)) return english;
+  return { vietnamese, english };
 }
 
 function requiredText(
@@ -330,7 +349,7 @@ function parseId(value: string): number | null {
 }
 
 function isFieldError(
-  value: string | number | null | FieldError,
+  value: string | number | null | Definition | FieldError,
 ): value is FieldError {
   return typeof value === "object" && value !== null && "error" in value;
 }
@@ -346,11 +365,34 @@ async function readJson(c: {
   }
 }
 
+function withDefinition(row: StoredEntry): Entry {
+  return { ...row, definition: parseStoredDefinition(row.definition) };
+}
+
+function parseStoredDefinition(value: string): Definition {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (isDefinition(parsed)) return parsed;
+  } catch {
+    // Rows created before this shape stored a plain sentence.
+  }
+  return { vietnamese: "", english: value };
+}
+
+function isDefinition(value: unknown): value is Definition {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return typeof body.vietnamese === "string" && typeof body.english === "string";
+}
+
 async function findEntry(db: D1Database, id: number): Promise<Entry | null> {
-  return db
+  const row = await db
     .prepare(`SELECT ${COLUMNS} FROM entries WHERE id = ?`)
     .bind(id)
-    .first<Entry>();
+    .first<StoredEntry>();
+  return row ? withDefinition(row) : null;
 }
 
 function databaseError(

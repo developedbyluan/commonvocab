@@ -173,3 +173,94 @@ Add the field to the `Entry` type, then add the column name to both `COLUMNS` an
 }
 ```
 
+## 8. MODIFY VALUE OF THE COLUMN `DEFINITION`
+Modify the value's data structure of column `definition` to the one below:
+```
+{
+"vietnamese": "nó đáng lắm"
+"english": "it was worth it"
+}
+```
+
+---
+
+The `definition` field is a single string today. I’ll check how it is stored and validated so the object shape fits this table.
+
+Keep the `definition` column as `TEXT`. D1 stores the object as a JSON string, and the Worker turns that string back into the object before it responds.
+
+The request body uses a real JSON object, with a comma between the two fields:
+
+```json
+{
+  "vietnamese": "nó đáng lắm",
+  "english": "it was worth it"
+}
+```
+
+### i. Change the type
+
+In `src/entries.ts`, replace `definition: string` with:
+
+```ts
+type Definition = {
+  vietnamese: string;
+  english: string;
+};
+```
+
+Then `Entry` uses `definition: Definition`.
+
+### ii. Accept that object in `parseEntry`
+
+`requiredText(body.definition, ...)` rejects an object. Replace that check with a function that reads both fields:
+
+```ts
+function requiredDefinition(value: unknown): Definition | FieldError {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { error: "definition must be an object" };
+  }
+  const body = value as Record<string, unknown>;
+  const vietnamese = requiredText(body.vietnamese, "definition.vietnamese", true);
+  if (isFieldError(vietnamese)) return vietnamese;
+  const english = requiredText(body.english, "definition.english", true);
+  if (isFieldError(english)) return english;
+  return { vietnamese, english };
+}
+```
+
+`parseEntry` then stores that object on `definition`.
+
+### iii. Save a string, return an object
+
+D1 gives `definition` back as text. Bind the stored form in the `INSERT` and `UPDATE` calls:
+
+```ts
+JSON.stringify(input.definition)
+```
+
+After every `SELECT`, `INSERT ... RETURNING`, `UPDATE ... RETURNING`, and `DELETE ... RETURNING`, parse it before `c.json`:
+
+```ts
+function withDefinition(row: Entry & { definition: string }): Entry {
+  return { ...row, definition: JSON.parse(row.definition) as Definition };
+}
+```
+
+A saved row then responds as:
+
+```json
+"definition": { "vietnamese": "nó đáng lắm", "english": "it was worth it" }
+```
+
+### iv. Convert the rows you already have
+
+The current values are plain sentences, such as `"the cost was justified"`. Add `migrations/0004_definition_json.sql` and apply it locally and remotely:
+
+```sql
+UPDATE entries
+SET definition = json_object('vietnamese', '', 'english', definition)
+WHERE json_extract(definition, '$.english') IS NULL;
+```
+
+That puts the old sentence in `english` and leaves `vietnamese` empty. Fill in the Vietnamese text with a later `PUT`. The `PUT` body must include both strings, because `requiredDefinition` rejects an empty one.
+

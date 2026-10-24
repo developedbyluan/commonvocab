@@ -1,5 +1,5 @@
 # Cloudflare plugin addition
-_Exported on 10/25/2026 at 06:23:54 GMT+7 from Cursor (3.27.12)_
+_Exported on 10/25/2026 at 06:54:35 GMT+7 from Cursor (3.27.12)_
 
 ---
 
@@ -643,4 +643,127 @@ The file already has those two corrections. I’ll confirm a create request stor
 The file already had the fix, so nothing further needed editing. `status` now accepts `pending`, `aigenerated`, `editorpicked`, and `approved`, and the value you send is the value that gets stored.
 
 A local create with `"status": "approved"` returned that same status. `"status": "pending"` was stored as `pending`. `"status": "processing"` returned 400. The two test rows were deleted afterward.
+
+---
+
+**User**
+
+I want to modify the column definition so that it should accept the value with datastructure like this example:
+```
+{
+"vietnamese": "nó đáng lắm"
+"english": "it was worth it"
+}
+```
+
+---
+
+**Cursor**
+
+The `definition` field is a single string today. I’ll check how it is stored and validated so the object shape fits this table.
+
+Keep the `definition` column as `TEXT`. D1 stores the object as a JSON string, and the Worker turns that string back into the object before it responds.
+
+The request body uses a real JSON object, with a comma between the two fields:
+
+```json
+{
+  "vietnamese": "nó đáng lắm",
+  "english": "it was worth it"
+}
+```
+
+## 1. Change the type
+
+In `src/entries.ts`, replace `definition: string` with:
+
+```ts
+type Definition = {
+  vietnamese: string;
+  english: string;
+};
+```
+
+Then `Entry` uses `definition: Definition`.
+
+## 2. Accept that object in `parseEntry`
+
+`requiredText(body.definition, ...)` rejects an object. Replace that check with a function that reads both fields:
+
+```ts
+function requiredDefinition(value: unknown): Definition | FieldError {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { error: "definition must be an object" };
+  }
+  const body = value as Record<string, unknown>;
+  const vietnamese = requiredText(body.vietnamese, "definition.vietnamese", true);
+  if (isFieldError(vietnamese)) return vietnamese;
+  const english = requiredText(body.english, "definition.english", true);
+  if (isFieldError(english)) return english;
+  return { vietnamese, english };
+}
+```
+
+`parseEntry` then stores that object on `definition`.
+
+## 3. Save a string, return an object
+
+D1 gives `definition` back as text. Bind the stored form in the `INSERT` and `UPDATE` calls:
+
+```ts
+JSON.stringify(input.definition)
+```
+
+After every `SELECT`, `INSERT ... RETURNING`, `UPDATE ... RETURNING`, and `DELETE ... RETURNING`, parse it before `c.json`:
+
+```ts
+function withDefinition(row: Entry & { definition: string }): Entry {
+  return { ...row, definition: JSON.parse(row.definition) as Definition };
+}
+```
+
+A saved row then responds as:
+
+```json
+"definition": { "vietnamese": "nó đáng lắm", "english": "it was worth it" }
+```
+
+## 4. Convert the rows you already have
+
+The current values are plain sentences, such as `"the cost was justified"`. Add `migrations/0004_definition_json.sql` and apply it locally and remotely:
+
+```sql
+UPDATE entries
+SET definition = json_object('vietnamese', '', 'english', definition)
+WHERE json_extract(definition, '$.english') IS NULL;
+```
+
+That puts the old sentence in `english` and leaves `vietnamese` empty. Fill in the Vietnamese text with a later `PUT`. The `PUT` body must include both strings, because `requiredDefinition` rejects an empty one.
+
+---
+
+**User**
+
+implement the modification on the @src/entries.ts for me
+
+---
+
+**Cursor**
+
+I'll update `src/entries.ts` so `definition` is saved as JSON and returned as an object with `vietnamese` and `english`.
+
+`definition` is still a plain string in the Worker. I’ll accept the Vietnamese/English object on write and turn the stored JSON back into that object on every response.
+
+`definition` is now an object with `vietnamese` and `english` on every entry route. A create request sends it like this:
+
+```json
+"definition": {
+  "vietnamese": "nó đáng lắm",
+  "english": "it was worth it"
+}
+```
+
+The Worker checks that both fields are non-empty strings, stores the object as JSON text, and turns it back into an object in the response. A plain string for `definition` returns 400 with `definition must be an object`.
+
+Rows saved before this change still contain a single sentence in the database. Those responses use that sentence as `english` and leave `vietnamese` empty. A `PUT` with both strings replaces that stored value.
 
