@@ -17,6 +17,9 @@ type FieldError = { error: string };
 const COLUMNS =
   "id, input_text, definition, media_id, sentence_id, start_index, end_index";
 
+const PUBLIC_COLUMNS =
+  "input_text, definition, media_id, sentence_id, start_index, end_index";
+
 const entries = new Hono<{ Bindings: CloudflareBindings }>();
 
 entries.get("/", async (c) => {
@@ -45,6 +48,40 @@ entries.get("/", async (c) => {
       .all<Entry>();
 
     return c.json(results);
+  } catch (error) {
+    return databaseError(c, error);
+  }
+});
+
+entries.get("/lookup", async (c) => {
+  const mediaId = requiredQueryText(c.req.query("media_id"), "media_id");
+  if (isFieldError(mediaId)) return c.json(mediaId, 400);
+  const sentenceId = requiredQueryText(c.req.query("sentence_id"), "sentence_id");
+  if (isFieldError(sentenceId)) return c.json(sentenceId, 400);
+  const startIndex = requiredQueryIndex(c.req.query("start_index"), "start_index");
+  if (isFieldError(startIndex)) return c.json(startIndex, 400);
+  const endIndex = requiredQueryIndex(c.req.query("end_index"), "end_index");
+  if (isFieldError(endIndex)) return c.json(endIndex, 400);
+  if (endIndex < startIndex) {
+    return c.json(
+      { error: "end_index must be greater than or equal to start_index" },
+      400,
+    );
+  }
+
+  try {
+    const row = await c.env.DB.prepare(
+      `SELECT ${PUBLIC_COLUMNS}
+       FROM entries
+       WHERE media_id = ? AND sentence_id = ? AND start_index = ? AND end_index = ?
+       ORDER BY id DESC
+       LIMIT 1`,
+    )
+      .bind(mediaId, sentenceId, startIndex, endIndex)
+      .first<EntryInput>();
+
+    if (!row) return c.json({ error: "entry not found" }, 404);
+    return c.json(row);
   } catch (error) {
     return databaseError(c, error);
   }
@@ -195,6 +232,27 @@ function optionalText(
   const text = value.trim();
   if (text.length === 0) return { error: `${field} must not be empty` };
   return text;
+}
+
+function requiredQueryText(
+  value: string | undefined,
+  field: string,
+): string | FieldError {
+  if (value === undefined) return { error: `${field} is required` };
+  const text = value.trim();
+  if (text.length === 0) return { error: `${field} must not be empty` };
+  return text;
+}
+
+function requiredQueryIndex(
+  value: string | undefined,
+  field: string,
+): number | FieldError {
+  if (value === undefined) return { error: `${field} is required` };
+  if (!/^\d+$/.test(value)) return { error: `${field} must be an integer` };
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) return { error: `${field} must be an integer` };
+  return parsed;
 }
 
 function requiredIndex(value: unknown, field: string): number | FieldError {
