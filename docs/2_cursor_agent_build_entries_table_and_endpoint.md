@@ -1,5 +1,5 @@
 # Cloudflare plugin addition
-_Exported on 10/24/2026 at 10:53:08 GMT+7 from Cursor (3.27.12)_
+_Exported on 10/24/2026 at 11:30:56 GMT+7 from Cursor (3.27.12)_
 
 ---
 
@@ -123,3 +123,96 @@ bun run deploy
 
 After that, `GET /entries` on the remote URL should return `[]`. The `entries` table is already on the remote `commonvocab` database, so the deployed Worker can use it immediately.
 
+---
+
+**User**
+
+@src/entries.ts:66 teach me how to send a post request to this endpoint
+
+---
+
+**Cursor**
+
+The create route is the `POST /entries` handler. I’ll read its validation so the request matches what the Worker actually accepts.
+
+Send a `POST` to `/entries` with a JSON object. That handler is mounted in `src/index.ts`, so the full path is `/entries`, not `/`.
+
+Use the local server while `bun run dev` is running. The copy on `https://commonvocab.developedbyluan.workers.dev` is still the older deploy, so `/entries` there returns 404 until you run `bun run deploy`.
+
+```bash
+curl -X POST http://localhost:8787/entries \
+  -H 'content-type: application/json' \
+  -d '{"input_text":"it was worth it","definition":"the cost was justified","media_id":"media-1","sentence_id":"sentence-1","start_index":5,"end_index":20}'
+```
+
+`-X POST` selects this handler. The `content-type` header tells Hono to parse the body as JSON. `-d` is that body.
+
+For the sentence `"God, it was worth it."`, the phrase starts at character 5 and stops at 20. `end_index` is exclusive, same as `slice`, and it must be greater than or equal to `start_index`.
+
+A successful insert returns **201** and the stored row, including the new `id`:
+
+```json
+{"id":1,"input_text":"it was worth it","definition":"the cost was justified","media_id":"media-1","sentence_id":"sentence-1","start_index":5,"end_index":20}
+```
+
+The same request from JavaScript:
+
+```js
+const response = await fetch("http://localhost:8787/entries", {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({
+    input_text: "it was worth it",
+    definition: "the cost was justified",
+    media_id: "media-1",
+    sentence_id: "sentence-1",
+    start_index: 5,
+    end_index: 20,
+  }),
+})
+
+const entry = await response.json()
+```
+
+Every field is required. `input_text`, `definition`, `media_id`, and `sentence_id` must be strings. The two indexes must be whole numbers, and `start_index` cannot be negative. `definition`, `media_id`, and `sentence_id` are trimmed before they are stored. `input_text` is kept as you sent it, so the indexes still point at the original phrase. A bad body comes back as **400** with `{ "error": "..." }`.
+
+---
+
+**User**
+
+build a new GET endpoint in @src/entries.ts which allows users to input the media id, the sentence id, the start index, and the end index. and the response should be like this example:
+```
+{"input_text":"it was worth it","definition":"the cost was justified","media_id":"1","sentence_id":"1","start_index":5,"end_index":20}
+```
+
+is it possible?
+
+---
+
+**Cursor**
+
+Yes. A GET can look up one row by media id, sentence id, and the two indexes. I’ll add that route next to the existing handlers and match the response shape you showed.
+
+The lookup matched the row you already had. I’ll remove the extra copy the check inserted so it doesn’t stay in the local database.
+
+Yes. `GET /entries/lookup` finds one saved row from the media id, sentence id, and the two indexes.
+
+```bash
+curl --get 'http://localhost:8787/entries/lookup' \
+  --data-urlencode 'media_id=1' \
+  --data-urlencode 'sentence_id=1' \
+  --data-urlencode 'start_index=5' \
+  --data-urlencode 'end_index=20'
+```
+
+That request against your local row returns:
+
+```json
+{"input_text":"it was worth it","definition":"the cost was justified","media_id":"1","sentence_id":"1","start_index":5,"end_index":20}
+```
+
+All four query parameters are required. A missing span returns `404`. A missing or invalid parameter returns `400`. If several rows share the same span, the newest one is returned. `GET /entries/:id` is unchanged.
+
+This is on the local dev server. `bun run deploy` publishes it to `https://commonvocab.developedbyluan.workers.dev`.
+
+---
