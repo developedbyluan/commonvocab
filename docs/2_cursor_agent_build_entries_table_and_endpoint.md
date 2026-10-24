@@ -1,5 +1,5 @@
 # Cloudflare plugin addition
-_Exported on 10/24/2026 at 12:20:23 GMT+7 from Cursor (3.27.12)_
+_Exported on 10/24/2026 at 12:54:00 GMT+7 from Cursor (3.27.12)_
 
 ---
 
@@ -299,4 +299,142 @@ In Insomnia, keep the GET to `http://localhost:8787/entries/lookup` and add a fi
 The same phrase returns the entry object. A different phrase returns `false`.
 
 I am in Ask mode, so this is the change to make and not an edit in the file. Switch to Agent mode if you want it applied.
+
+---
+
+**User**
+
+teach me how to add more columns to the entries table
+
+---
+
+**Cursor**
+
+Adding a column means a new D1 migration, then applying it to the database this Worker already uses. I’ll check the current `entries` schema so the steps match this project.
+
+Add the column in a new migration file. Leave `migrations/0001_create_entries.sql` as it is. Wrangler has already applied that file to your local database and to the remote `commonvocab` database, and it will not run an edited copy again.
+
+## 1. Create the next migration
+
+Add `migrations/0002_add_part_of_speech.sql`. The `0002_` prefix is the version, and it must be higher than `0001`. Replace `part_of_speech` with the column you actually want.
+
+```sql
+ALTER TABLE entries ADD COLUMN part_of_speech TEXT NOT NULL DEFAULT '';
+```
+
+`ALTER TABLE` changes the table that already has rows. A new `NOT NULL` column needs a `DEFAULT`, because every existing row has to receive a value. A column that can be empty is simpler:
+
+```sql
+ALTER TABLE entries ADD COLUMN part_of_speech TEXT;
+```
+
+`TEXT` stores a string. Use `INTEGER` for a whole number. You can also add an index in the same file when you will look rows up by that column:
+
+```sql
+CREATE INDEX idx_entries_part_of_speech ON entries (part_of_speech);
+```
+
+## 2. Apply it to both databases
+
+From the project folder, update the database used by `bun run dev`:
+
+```bash
+npx wrangler d1 migrations apply commonvocab --local
+```
+
+Then update the database behind the deployed Worker:
+
+```bash
+npx wrangler d1 migrations apply commonvocab --remote
+```
+
+Wrangler asks you to confirm the remote one. After either command, `0002_add_part_of_speech.sql` is recorded in the `d1_migrations` table, so the next apply skips it.
+
+## 3. Teach the Worker about the column
+
+The routes name their columns in `src/entries.ts`. A new database column stays hidden until those lists include it.
+
+Add the field to the `Entry` type, then add the column name to both `COLUMNS` and `PUBLIC_COLUMNS`. On create and update, add it to the `INSERT` and `UPDATE` statements, to the `.bind(...)` calls, and to `parseEntry` so a JSON body can send it.
+
+Until that code is deployed, `https://commonvocab.developedbyluan.workers.dev` still runs the previous Worker. The remote `ALTER TABLE` is enough for the database. `bun run deploy` publishes the route changes.
+
+---
+
+**User**
+
+explain this: CREATE INDEX idx_entries_part_of_speech ON entries (part_of_speech);
+
+---
+
+**Cursor**
+
+That statement builds a lookup list for the `part_of_speech` column. It does not add a column and it does not change any row.
+
+```sql
+CREATE INDEX idx_entries_part_of_speech ON entries (part_of_speech);
+```
+
+Read it in four pieces:
+
+- `CREATE INDEX` tells SQLite to build that extra lookup list.
+- `idx_entries_part_of_speech` is the index's own name. Your table already has the same kind of names for the other columns: `idx_entries_input_text`, `idx_entries_media_id`, and `idx_entries_sentence_id`.
+- `ON entries` means the list belongs to the `entries` table.
+- `(part_of_speech)` means the list is sorted by that column.
+
+Without the index, a query such as `WHERE part_of_speech = 'verb'` walks every row in `entries` and checks the column. With the index, SQLite jumps to the `verb` entries in the list. The speedup matters once the table is large, or when that column is used in a `WHERE` or `ORDER BY`.
+
+Each insert and update also has to update the index, and the index takes some extra storage. For a column you never filter or sort by, the index is unused weight.
+
+This index allows duplicate values. Many rows can have `verb`. A `UNIQUE` index would reject a second row with the same value. Your `0002` migration only adds the column, so this line is optional and is not in that file yet.
+
+---
+
+**User**
+
+@/Users/developedbyluan/.cursor/projects/Users-developedbyluan-Desktop-commonvocab/terminals/2.txt:25-52 is this correct? Why I haven't seen any thing changed yet?
+
+---
+
+**Cursor**
+
+The migration command succeeded. I’ll check the local database and the Worker code to see why the column still doesn’t show up.
+
+The local migration is correct. `part_of_speech` is already on the local `entries` table, and `0002_add_part_of_speech.sql` is recorded as applied.
+
+The row you already had is still there. Its new column is an empty string, which is the `DEFAULT ''` from the migration:
+
+```text
+id 2, input_text "it was worth it", part_of_speech ""
+```
+
+Nothing looks different for three reasons:
+
+- The `.sqlite` file open in the editor is the database’s binary storage. Saving a column does not turn that file into readable text, so the editor still looks like noise.
+- `src/entries.ts` still selects only the original columns. `GET /entries` never asks for `part_of_speech`, so the JSON response stays the same.
+- This command used `--local`. The remote `commonvocab` database is unchanged until you run the same apply with `--remote`.
+
+---
+
+**User**
+
+I'm supposed to see the new sqlite file in this folder right: .wrangler/state/v3/d1
+
+---
+
+**Cursor**
+
+A migration updates the database you already have. I’ll look at `.wrangler/state/v3/d1` so I can point at the file that changed.
+
+No. Wrangler keeps using the same local database file and writes the new column into it.
+
+That file is the one you already have open:
+
+`.wrangler/state/v3/d1/miniflare-D1DatabaseObject/6c822d003d471725c95c65931f471cdb890ba11c7169fcf6a703e1e9d1868339.sqlite`
+
+The long name is an id for this local `commonvocab` database. `0001` created the `entries` table inside it, and `0002` added `part_of_speech` to that same table. A migration does not create another `.sqlite` file.
+
+The other files in that folder are helpers, not a second copy of your data:
+
+- `metadata.sqlite` is Wrangler's list of local D1 databases.
+- The `.sqlite-wal` and `.sqlite-shm` files are temporary files SQLite uses while writing.
 

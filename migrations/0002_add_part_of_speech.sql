@@ -1,0 +1,1 @@
+ALTER TABLE entries ADD COLUMN part_of_speech TEXT NOT NULL DEFAULT '';
