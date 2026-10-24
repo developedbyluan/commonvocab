@@ -1,5 +1,5 @@
 # Cloudflare plugin addition
-_Exported on 10/24/2026 at 22:07:00 GMT+7 from Cursor (3.27.12)_
+_Exported on 10/25/2026 at 06:23:54 GMT+7 from Cursor (3.27.12)_
 
 ---
 
@@ -563,4 +563,84 @@ function requiredStatus(
 ```
 
 Call `requiredStatus(body.status)` beside the `part_of_speech` check, and put `status` on the object `parseEntry` returns. A body that omits `status`, or sends `"done"`, then gets a 400 from the Worker. A value that somehow reaches D1 still fails the `CHECK`.
+
+---
+
+**User**
+
+I just implement step 3 in @src/entries.ts , review the file to check if I did it right?
+
+---
+
+**Cursor**
+
+I'll review `src/entries.ts` against the status migration and check that the three allowed values are enforced on every read and write.
+
+The column is wired through the queries correctly. The value that gets saved is not.
+
+`COLUMNS`, `PUBLIC_COLUMNS`, the `INSERT`, and the `UPDATE` all include `status`, and the `?` placeholders match the `.bind(...)` arguments. Reads, creates, updates, and deletes will carry the column.
+
+Two spots still disagree with your migration. The database allows `pending`, `aigenerated`, `editorpicked`, and `approved`:
+
+```1:3:migrations/0003_add_status.sql
+ALTER TABLE entries
+ADD COLUMN status TEXT NOT NULL DEFAULT 'aigenerated'
+CHECK (status IN ('pending', 'aigenerated', 'editorpicked', 'approved'));
+```
+
+The `Entry` type uses those same four words. `requiredStatus` still allows the earlier set, `pending`, `processing`, and `completed`:
+
+```204:212:src/entries.ts
+const STATUSES = ["pending", "processing", "completed"] as const;
+
+function requiredStatus(
+  value: unknown,
+): (typeof STATUSES)[number] | FieldError {
+  if (typeof value !== "string" || !STATUSES.includes(value as (typeof STATUSES)[number])) {
+    return { error: "status must be pending, processing, or completed" };
+  }
+  return value as (typeof STATUSES)[number];
+}
+```
+
+A body with `"status": "approved"` returns 400. A body with `"status": "processing"` passes this check, then the database `CHECK` rejects it.
+
+`parseEntry` also drops the value it just validated and always stores `aigenerated`:
+
+```243:254:src/entries.ts
+  const status = requiredStatus(body.status);
+  if (isFieldError(status)) return status;
+  return {
+    input_text: inputText,
+    definition,
+    media_id: mediaId,
+    sentence_id: sentenceId,
+    start_index: startIndex,
+    end_index: endIndex,
+    part_of_speech: partOfSpeech,
+    status: "aigenerated",
+  };
+```
+
+So a valid `"status": "pending"` is accepted and then saved as `"aigenerated"`.
+
+Change `STATUSES` to `pending`, `aigenerated`, `editorpicked`, and `approved`, and return `status` instead of the hardcoded `"aigenerated"`.
+
+---
+
+**User**
+
+fix it for me
+
+---
+
+**Cursor**
+
+The status list and the saved value still disagree with the migration. I’ll point both at `pending`, `aigenerated`, `editorpicked`, and `approved`.
+
+The file already has those two corrections. I’ll confirm a create request stores the status you send and rejects a value outside the list.
+
+The file already had the fix, so nothing further needed editing. `status` now accepts `pending`, `aigenerated`, `editorpicked`, and `approved`, and the value you send is the value that gets stored.
+
+A local create with `"status": "approved"` returned that same status. `"status": "pending"` was stored as `pending`. `"status": "processing"` returned 400. The two test rows were deleted afterward.
 

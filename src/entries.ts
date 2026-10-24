@@ -9,6 +9,7 @@ type Entry = {
   start_index: number;
   end_index: number;
   part_of_speech: string;
+  status: "pending" | "aigenerated" | "editorpicked" | "approved";
 };
 
 type EntryInput = Omit<Entry, "id">;
@@ -16,10 +17,10 @@ type EntryInput = Omit<Entry, "id">;
 type FieldError = { error: string };
 
 const COLUMNS =
-  "id, input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech";
+  "id, input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status";
 
 const PUBLIC_COLUMNS =
-  "input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech";
+  "input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status";
 
 const entries = new Hono<{ Bindings: CloudflareBindings }>();
 
@@ -121,8 +122,8 @@ entries.post("/", async (c) => {
 
   try {
     const row = await c.env.DB.prepare(
-      `INSERT INTO entries (input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO entries (input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING ${COLUMNS}`,
     )
       .bind(
@@ -133,6 +134,7 @@ entries.post("/", async (c) => {
         input.start_index,
         input.end_index,
         input.part_of_speech,
+        input.status,
       )
       .first<Entry>();
 
@@ -156,7 +158,7 @@ entries.put("/:id", async (c) => {
   try {
     const row = await c.env.DB.prepare(
       `UPDATE entries
-       SET input_text = ?, definition = ?, media_id = ?, sentence_id = ?, start_index = ?, end_index = ?, part_of_speech = ?
+       SET input_text = ?, definition = ?, media_id = ?, sentence_id = ?, start_index = ?, end_index = ?, part_of_speech = ?, status = ?
        WHERE id = ?
        RETURNING ${COLUMNS}`,
     )
@@ -168,6 +170,7 @@ entries.put("/:id", async (c) => {
         input.start_index,
         input.end_index,
         input.part_of_speech,
+        input.status,
         id,
       )
       .first<Entry>();
@@ -198,6 +201,17 @@ entries.delete("/:id", async (c) => {
   }
 });
 
+const STATUSES = ["pending", "aigenerated", "editorpicked", "approved"] as const;
+
+function requiredStatus(
+  value: unknown,
+): (typeof STATUSES)[number] | FieldError {
+  if (typeof value !== "string" || !STATUSES.includes(value as (typeof STATUSES)[number])) {
+    return { error: "status must be pending, aigenerated, editorpicked, or approved" };
+  }
+  return value as (typeof STATUSES)[number];
+}
+
 function parseEntry(value: unknown): EntryInput | FieldError {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return { error: "expected a JSON object" };
@@ -219,9 +233,15 @@ function parseEntry(value: unknown): EntryInput | FieldError {
   if (endIndex < startIndex) {
     return { error: "end_index must be greater than or equal to start_index" };
   }
-  const partOfSpeech = requiredText(body.part_of_speech, "part_of_speech", true);
+  const partOfSpeech = requiredText(
+    body.part_of_speech,
+    "part_of_speech",
+    true,
+  );
   if (isFieldError(partOfSpeech)) return partOfSpeech;
 
+  const status = requiredStatus(body.status);
+  if (isFieldError(status)) return status;
   return {
     input_text: inputText,
     definition,
@@ -230,6 +250,7 @@ function parseEntry(value: unknown): EntryInput | FieldError {
     start_index: startIndex,
     end_index: endIndex,
     part_of_speech: partOfSpeech,
+    status: status,
   };
 }
 
