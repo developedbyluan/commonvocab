@@ -154,3 +154,22 @@ Add the field to the `Entry` type, then add the column name to both `COLUMNS` an
   "part_of_speech": "adjective" // new column
 }
 ```
+## 7. [UPDATE] INSERT A NEW ENTRY/VOCAB (local dev) after adding STATUS column
+
+- Method: POST
+- Endpoint: http://localhost:8787/entries
+- Body -> JSON:
+
+```json
+{
+  "input_text": "worth",
+  "definition": "having a particular value, especially in money",
+  "media_id": "1",
+  "sentence_id": "2",
+  "start_index": 15,
+  "end_index": 21,
+  "part_of_speech": "adjective",
+  "status": "editorpicked | pending | approved | aigenerated" // new column
+}
+```
+
