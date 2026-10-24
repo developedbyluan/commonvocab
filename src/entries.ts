@@ -54,11 +54,19 @@ entries.get("/", async (c) => {
 });
 
 entries.get("/lookup", async (c) => {
+  const inputText = requiredQueryText(c.req.query("input_text"), "input_text");
+  if (isFieldError(inputText)) return c.json(inputText, 400);
   const mediaId = requiredQueryText(c.req.query("media_id"), "media_id");
   if (isFieldError(mediaId)) return c.json(mediaId, 400);
-  const sentenceId = requiredQueryText(c.req.query("sentence_id"), "sentence_id");
+  const sentenceId = requiredQueryText(
+    c.req.query("sentence_id"),
+    "sentence_id",
+  );
   if (isFieldError(sentenceId)) return c.json(sentenceId, 400);
-  const startIndex = requiredQueryIndex(c.req.query("start_index"), "start_index");
+  const startIndex = requiredQueryIndex(
+    c.req.query("start_index"),
+    "start_index",
+  );
   if (isFieldError(startIndex)) return c.json(startIndex, 400);
   const endIndex = requiredQueryIndex(c.req.query("end_index"), "end_index");
   if (isFieldError(endIndex)) return c.json(endIndex, 400);
@@ -81,6 +89,9 @@ entries.get("/lookup", async (c) => {
       .first<EntryInput>();
 
     if (!row) return c.json({ error: "entry not found" }, 404);
+    const sameText =
+      row.input_text.trim().toLowerCase() === inputText.toLowerCase();
+    if (!sameText) return c.json({ error: "input text does not match" }, 400);
     return c.json(row);
   } catch (error) {
     return databaseError(c, error);
@@ -89,7 +100,8 @@ entries.get("/lookup", async (c) => {
 
 entries.get("/:id", async (c) => {
   const id = parseId(c.req.param("id"));
-  if (id === null) return c.json({ error: "id must be a positive integer" }, 400);
+  if (id === null)
+    return c.json({ error: "id must be a positive integer" }, 400);
 
   try {
     const row = await findEntry(c.env.DB, id);
@@ -131,7 +143,8 @@ entries.post("/", async (c) => {
 
 entries.put("/:id", async (c) => {
   const id = parseId(c.req.param("id"));
-  if (id === null) return c.json({ error: "id must be a positive integer" }, 400);
+  if (id === null)
+    return c.json({ error: "id must be a positive integer" }, 400);
 
   const body = await readJson(c);
   if (body instanceof Response) return body;
@@ -165,7 +178,8 @@ entries.put("/:id", async (c) => {
 
 entries.delete("/:id", async (c) => {
   const id = parseId(c.req.param("id"));
-  if (id === null) return c.json({ error: "id must be a positive integer" }, 400);
+  if (id === null)
+    return c.json({ error: "id must be a positive integer" }, 400);
 
   try {
     const row = await c.env.DB.prepare(
@@ -251,7 +265,8 @@ function requiredQueryIndex(
   if (value === undefined) return { error: `${field} is required` };
   if (!/^\d+$/.test(value)) return { error: `${field} must be an integer` };
   const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed)) return { error: `${field} must be an integer` };
+  if (!Number.isSafeInteger(parsed))
+    return { error: `${field} must be an integer` };
   return parsed;
 }
 
@@ -259,7 +274,8 @@ function requiredIndex(value: unknown, field: string): number | FieldError {
   if (typeof value !== "number" || !Number.isInteger(value)) {
     return { error: `${field} must be an integer` };
   }
-  if (value < 0) return { error: `${field} must be greater than or equal to 0` };
+  if (value < 0)
+    return { error: `${field} must be greater than or equal to 0` };
   return value;
 }
 
@@ -286,7 +302,9 @@ function parseId(value: string): number | null {
   return id;
 }
 
-function isFieldError(value: string | number | null | FieldError): value is FieldError {
+function isFieldError(
+  value: string | number | null | FieldError,
+): value is FieldError {
   return typeof value === "object" && value !== null && "error" in value;
 }
 
@@ -309,7 +327,10 @@ async function findEntry(db: D1Database, id: number): Promise<Entry | null> {
 }
 
 function databaseError(
-  c: { json: (body: FieldError, status: 500) => Response; req: { path: string } },
+  c: {
+    json: (body: FieldError, status: 500) => Response;
+    req: { path: string };
+  },
   error: unknown,
 ): Response {
   console.error(

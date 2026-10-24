@@ -1,5 +1,5 @@
 # Cloudflare plugin addition
-_Exported on 10/24/2026 at 11:30:56 GMT+7 from Cursor (3.27.12)_
+_Exported on 10/24/2026 at 12:20:23 GMT+7 from Cursor (3.27.12)_
 
 ---
 
@@ -216,3 +216,87 @@ All four query parameters are required. A missing span returns `404`. A missing 
 This is on the local dev server. `bun run deploy` publishes it to `https://commonvocab.developedbyluan.workers.dev`.
 
 ---
+
+**User**
+
+teach me how to request this endpoint using insomnia
+
+---
+
+**Cursor**
+
+In Insomnia this is a GET with four query parameters. Leave the body empty. The handler reads `media_id`, `sentence_id`, `start_index`, and `end_index` from the URL, not from JSON.
+
+1. Start the local Worker with `bun run dev` so `http://localhost:8787` is running.
+2. In Insomnia, create a request and set the method to **GET**.
+3. Set the URL to `http://localhost:8787/entries/lookup`.
+4. Open the **Query** tab and add these four rows:
+
+| Name | Value |
+|---|---|
+| `media_id` | `1` |
+| `sentence_id` | `1` |
+| `start_index` | `5` |
+| `end_index` | `20` |
+
+Insomnia turns that into:
+
+```text
+http://localhost:8787/entries/lookup?media_id=1&sentence_id=1&start_index=5&end_index=20
+```
+
+5. Send the request. You do not need an authorization header or a `Content-Type` header, because there is no body.
+
+A match returns **200** and:
+
+```json
+{"input_text":"it was worth it","definition":"the cost was justified","media_id":"1","sentence_id":"1","start_index":5,"end_index":20}
+```
+
+That row has to exist already. Create it first with a **POST** to `http://localhost:8787/entries`, body type **JSON**, and the same four fields plus `input_text` and `definition`. A span that was never saved returns **404** with `{ "error": "entry not found" }`. A missing query parameter returns **400**.
+
+---
+
+**User**
+
+upgrade this endpoint to accept the fifth input which is the text.
+Before reponse to the users, compare the reponse's input_text with user's input text. if they are totally different, then tell users it doesn't match or false instead.
+
+Is it possible?
+
+---
+
+**Cursor**
+
+Yes. The lookup already loads `input_text`, so a fifth query value can be compared before the row is returned. I’ll check the current handler so the change matches how it reads the other four inputs.
+
+Yes. Look up the row with the four location fields you already have, then compare `input_text` with the fifth query value before you send the row back.
+
+Add `input_text` the same way as `media_id`, right after the other query checks in `GET /entries/lookup`:
+
+```ts
+const inputText = requiredQueryText(c.req.query("input_text"), "input_text");
+if (isFieldError(inputText)) return c.json(inputText, 400);
+```
+
+The database query stays the same. It still finds the row by media, sentence, and the two indexes. After `if (!row) return c.json({ error: "entry not found" }, 404)`, compare the saved phrase with what the user sent:
+
+```ts
+const sameText =
+  row.input_text.trim().toLowerCase() === inputText.toLowerCase();
+if (!sameText) return c.json(false);
+return c.json(row);
+```
+
+`requiredQueryText` already trims the query value. Trimming the saved phrase too means extra spaces do not count as a different phrase. `toLowerCase()` means `It Was Worth It` still matches `it was worth it`. The letters have to be the same phrase. `it was worth it` compared with `purple` returns the JSON boolean `false` with status 200. A span that was never saved still returns 404.
+
+In Insomnia, keep the GET to `http://localhost:8787/entries/lookup` and add a fifth query row:
+
+| Name | Value |
+|---|---|
+| `input_text` | `it was worth it` |
+
+The same phrase returns the entry object. A different phrase returns `false`.
+
+I am in Ask mode, so this is the change to make and not an edit in the file. Switch to Agent mode if you want it applied.
+
