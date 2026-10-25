@@ -1,0 +1,2 @@
+ALTER TABLE entries
+ADD COLUMN usage TEXT NOT NULL DEFAULT '[]';

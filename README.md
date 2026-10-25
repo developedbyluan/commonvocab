@@ -154,6 +154,7 @@ Add the field to the `Entry` type, then add the column name to both `COLUMNS` an
   "part_of_speech": "adjective" // new column
 }
 ```
+
 ## 7. [UPDATE] INSERT A NEW ENTRY/VOCAB (local dev) after adding STATUS column
 
 - Method: POST
@@ -174,7 +175,9 @@ Add the field to the `Entry` type, then add the column name to both `COLUMNS` an
 ```
 
 ## 8. MODIFY VALUE OF THE COLUMN `DEFINITION`
+
 Modify the value's data structure of column `definition` to the one below:
+
 ```
 {
 "vietnamese": "nó đáng lắm"
@@ -220,7 +223,11 @@ function requiredDefinition(value: unknown): Definition | FieldError {
     return { error: "definition must be an object" };
   }
   const body = value as Record<string, unknown>;
-  const vietnamese = requiredText(body.vietnamese, "definition.vietnamese", true);
+  const vietnamese = requiredText(
+    body.vietnamese,
+    "definition.vietnamese",
+    true,
+  );
   if (isFieldError(vietnamese)) return vietnamese;
   const english = requiredText(body.english, "definition.english", true);
   if (isFieldError(english)) return english;
@@ -235,7 +242,7 @@ function requiredDefinition(value: unknown): Definition | FieldError {
 D1 gives `definition` back as text. Bind the stored form in the `INSERT` and `UPDATE` calls:
 
 ```ts
-JSON.stringify(input.definition)
+JSON.stringify(input.definition);
 ```
 
 After every `SELECT`, `INSERT ... RETURNING`, `UPDATE ... RETURNING`, and `DELETE ... RETURNING`, parse it before `c.json`:
@@ -267,6 +274,7 @@ WHERE json_valid(definition) = 0;
 That puts the old sentence in `english` and leaves `vietnamese` empty. Fill in the Vietnamese text with a later `PUT`. The `PUT` body must include both strings, because `requiredDefinition` rejects an empty one.
 
 ## 9. [UPDATE] INSERT A NEW ENTRY/VOCAB (local dev) after modifying DEFINITION column's data structure
+
 ```json
 {
   "input_text": "it was worth it",
@@ -281,4 +289,23 @@ That puts the old sentence in `english` and leaves `vietnamese` empty. Fill in t
   "part_of_speech": "phrase",
   "status": "pending"
 }
+```
+
+## 10. NEW COLUMN `usage`
+### 1. Add the migration
+
+Create [migrations/0005_add_usage.sql](migrations/0005_add_usage.sql). Leave [migrations/0004_definition_json.sql](migrations/0004_definition_json.sql) unchanged.
+
+```sql
+ALTER TABLE entries
+ADD COLUMN usage TEXT NOT NULL DEFAULT '[]';
+```
+
+`DEFAULT '[]'` fills every row that already exists. Do not call `json_extract` here. On this SQLite version it throws `malformed JSON` for values that are not already JSON, which is what broke migration `0004` before it was changed to `json_valid`.
+
+Apply it to the local database, then to the remote database:
+
+```bash
+npx wrangler d1 migrations apply commonvocab --local
+npx wrangler d1 migrations apply commonvocab --remote
 ```
