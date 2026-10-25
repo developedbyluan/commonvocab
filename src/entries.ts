@@ -50,27 +50,29 @@ type Entry = {
   phonetic: string;
   created_at: number;
   updated_at: number[];
+  allowed_roles: AllowedRole[];
 };
 
 type EntryInput = Omit<Entry, "id" | "created_at" | "updated_at">;
 
 type StoredEntry = Omit<
   Entry,
-  "definition" | "usage" | "subtitles" | "updated_at"
+  "definition" | "usage" | "subtitles" | "updated_at" | "allowed_roles"
 > & {
   definition: string;
   usage: string;
   subtitles: string;
   updated_at: string;
+  allowed_roles: string;
 };
 
 type FieldError = { error: string };
 
 const COLUMNS =
-  "id, input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, subtitles, phonetic, created_at, updated_at";
+  "id, input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, subtitles, phonetic, created_at, updated_at, allowed_roles";
 
 const PUBLIC_COLUMNS =
-  "input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, subtitles, phonetic, created_at, updated_at";
+  "input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, subtitles, phonetic, created_at, updated_at, allowed_roles";
 
 const entries = new Hono<{ Bindings: CloudflareBindings }>();
 
@@ -210,8 +212,8 @@ entries.post("/", async (c) => {
 
   try {
     const row = await c.env.DB.prepare(
-      `INSERT INTO entries (input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, subtitles, phonetic, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO entries (input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, subtitles, phonetic, created_at, updated_at, allowed_roles)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING ${COLUMNS}`,
     )
       .bind(
@@ -229,6 +231,7 @@ entries.post("/", async (c) => {
         input.phonetic,
         unixSeconds(),
         "[]",
+        JSON.stringify(input.allowed_roles),
       )
       .first<StoredEntry>();
 
@@ -252,7 +255,7 @@ entries.put("/:id", async (c) => {
   try {
     const row = await c.env.DB.prepare(
       `UPDATE entries
-       SET input_text = ?, definition = ?, media_id = ?, sentence_id = ?, start_index = ?, end_index = ?, part_of_speech = ?, status = ?, usage = ?, user_id = ?, subtitles = ?, phonetic = ?, updated_at = json_insert(updated_at, '$[#]', ?)
+       SET input_text = ?, definition = ?, media_id = ?, sentence_id = ?, start_index = ?, end_index = ?, part_of_speech = ?, status = ?, usage = ?, user_id = ?, subtitles = ?, phonetic = ?, allowed_roles = ?, updated_at = json_insert(updated_at, '$[#]', ?)
        WHERE id = ?
        RETURNING ${COLUMNS}`,
     )
@@ -269,6 +272,7 @@ entries.put("/:id", async (c) => {
         input.user_id,
         JSON.stringify(input.subtitles),
         input.phonetic,
+        JSON.stringify(input.allowed_roles),
         unixSeconds(),
         id,
       )
@@ -301,6 +305,10 @@ entries.delete("/:id", async (c) => {
 });
 
 const STATUSES = ["pending", "aigenerated", "editorpicked", "approved"] as const;
+
+const ROLES = ["standard", "premium", "vip", "vvip"] as const;
+
+type AllowedRole = (typeof ROLES)[number];
 
 function requiredStatus(
   value: unknown,
@@ -349,6 +357,8 @@ function parseEntry(value: unknown): EntryInput | FieldError {
   if (isFieldError(userId)) return userId;
   const phonetic = requiredText(body.phonetic, "phonetic", true);
   if (isFieldError(phonetic)) return phonetic;
+  const allowedRoles = requiredAllowedRoles(body.allowed_roles);
+  if (isFieldError(allowedRoles)) return allowedRoles;
   return {
     input_text: inputText,
     definition,
@@ -362,7 +372,26 @@ function parseEntry(value: unknown): EntryInput | FieldError {
     user_id: userId,
     subtitles,
     phonetic,
+    allowed_roles: allowedRoles,
   };
+}
+
+function requiredAllowedRoles(value: unknown): AllowedRole[] | FieldError {
+  if (!Array.isArray(value)) return { error: "allowed_roles must be an array" };
+  const roles: AllowedRole[] = [];
+  for (const item of value) {
+    if (typeof item !== "string" || !ROLES.includes(item as AllowedRole)) {
+      return {
+        error: "allowed_roles item must be standard, premium, vip, or vvip",
+      };
+    }
+    const role = item as AllowedRole;
+    if (roles.includes(role)) {
+      return { error: "allowed_roles item must not be repeated" };
+    }
+    roles.push(role);
+  }
+  return roles;
 }
 
 function requiredSubtitles(value: unknown): SubtitleLine[] | FieldError {
@@ -600,6 +629,7 @@ function isFieldError(
     | LocalizedText
     | SubtitleLine
     | SubtitleLine[]
+    | AllowedRole[]
     | FieldError,
 ): value is FieldError {
   return typeof value === "object" && value !== null && "error" in value;
@@ -627,7 +657,34 @@ function withStoredColumns(row: StoredEntry): Entry {
     usage: parseStoredUsage(row.usage),
     subtitles: parseStoredSubtitles(row.subtitles),
     updated_at: parseStoredUpdatedAt(row.updated_at),
+    allowed_roles: parseStoredAllowedRoles(row.allowed_roles),
   };
+}
+
+function parseStoredAllowedRoles(value: string): AllowedRole[] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (isAllowedRoles(parsed)) return parsed;
+  } catch {
+    // A bad stored value reads as the default role.
+  }
+  return ["standard"];
+}
+
+function isAllowedRoles(value: unknown): value is AllowedRole[] {
+  if (!Array.isArray(value)) return false;
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (
+      typeof item !== "string" ||
+      !ROLES.includes(item as AllowedRole) ||
+      seen.has(item)
+    ) {
+      return false;
+    }
+    seen.add(item);
+  }
+  return true;
 }
 
 function parseStoredUpdatedAt(value: string): number[] {
