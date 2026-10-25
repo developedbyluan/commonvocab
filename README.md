@@ -351,3 +351,16 @@ Below is an example:
   "user_id": "user_3JfBd7NGG2fv7pUKpN3vL2s2wBG"
 }
 ```
+
+## 12. REQUIRE `user_id` when requesting `entries/lookup`
+This change is needed because now an unknown lookup will be stored with placeholders for unknown information while still returning 404 to users.
+
+- METHOD: GET
+- ENDPOINT: `http://localhost:8787/entries/lookup`
+- QUERY PARAMS:
+  - media_id
+  - sentence_id
+  - start_index
+  - end_index
+  - input_text
+  - user_id // new param added

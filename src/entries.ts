@@ -107,6 +107,8 @@ entries.get("/lookup", async (c) => {
       400,
     );
   }
+  const userId = requiredQueryUserId(c.req.query("user_id"));
+  if (isFieldError(userId)) return c.json(userId, 400);
 
   try {
     const row = await c.env.DB.prepare(
@@ -119,10 +121,31 @@ entries.get("/lookup", async (c) => {
       .bind(mediaId, sentenceId, startIndex, endIndex)
       .first<StoredEntry>();
 
-    if (!row) return c.json({ error: "entry not found" }, 404);
+    if (!row) {
+      await c.env.DB.prepare(
+        `INSERT INTO entries (input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+        .bind(
+          inputText,
+          JSON.stringify({ vietnamese: "", english: "" }),
+          mediaId,
+          sentenceId,
+          startIndex,
+          endIndex,
+          "",
+          "pending",
+          "[]",
+          userId,
+        )
+        .run();
+      return c.json({ error: "entry not found" }, 404);
+    }
+
     const sameText =
       row.input_text.trim().toLowerCase() === inputText.toLowerCase();
     if (!sameText) return c.json({ error: "input text does not match" }, 400);
+    if (row.status === "pending") return c.json({ error: "entry not found" }, 404);
     return c.json(withStoredColumns(row));
   } catch (error) {
     return databaseError(c, error);
@@ -291,6 +314,15 @@ function parseEntry(value: unknown): EntryInput | FieldError {
     usage,
     user_id: userId,
   };
+}
+
+function requiredQueryUserId(value: string | undefined): string | FieldError {
+  const userId = requiredQueryText(value, "user_id");
+  if (isFieldError(userId)) return userId;
+  if (!userId.startsWith("user_")) {
+    return { error: "user_id must start with user_" };
+  }
+  return userId;
 }
 
 function requiredUserId(value: unknown): string | FieldError {

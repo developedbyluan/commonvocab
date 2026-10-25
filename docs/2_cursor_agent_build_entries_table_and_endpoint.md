@@ -1,5 +1,5 @@
 # Cloudflare plugin addition
-_Exported on 10/25/2026 at 22:23:52 GMT+7 from Cursor (3.27.12)_
+_Exported on 10/25/2026 at 22:46:36 GMT+7 from Cursor (3.27.12)_
 
 ---
 
@@ -1019,4 +1019,81 @@ The type already includes `user_id`. I'll add the migration and connect that fie
 ```
 
 `user_1` is stored and returned. `1` and `User_1` return 400 with `user_id must start with user_`. Rows that already existed received the default `user_`.
+
+---
+
+**User**
+
+@src/entries.ts:87 build a new feature for the GET METHOD of entries/lookup endpoint so that the server will add a new row to the entries table with all known information from users, and fill in the blank for unknown columns. Still response 404, 'entry not found' to users
+
+Is it ok and is it understood?
+
+---
+
+**Cursor**
+
+**Lookup miss creates a row**
+
+> **The lookup request does not include user_id today. When a miss creates a row, what should user_id be?**
+> - Store the blank value user_ (no new query parameter)
+> - Add a required user_id query parameter and store that value ✔
+
+> **The first miss returns 404 after saving the row. If the same span and text are requested again, the row now exists. What should that second request do?**
+> - Return 200 and the saved row, including the blank fields
+> - Keep returning 404 until someone fills the blank fields ✔
+
+The miss should save a placeholder and still return 404, and a later lookup stays 404 until those blank fields are filled. `user_id` will be a required query parameter on that route.
+
+---
+
+**User**
+
+I want to modify the plan in case another or the same user requests that again. can I do that?
+
+---
+
+**Cursor**
+
+A repeat lookup can be handled. The current plan keeps one placeholder and the first `user_id`. I need to know what a second request should do before changing that.
+
+**Repeat lookup**
+
+> **A placeholder already exists for that span and the text matches. The same user, or a different user, requests the lookup again before the blank fields are filled. What should happen?**
+> - Do not insert another row. Keep the first user_id. Return 404 again.
+> - Insert a separate placeholder for each user_id. Return 404 for each of those requests.
+> - Keep one row, replace user_id with the latest requester, and return 404.
+>
+> Answer: the status of this kind of insert is pending, so if they request again, use the status pending as the check. is it ok?
+
+Using `pending` as the check is sound: a second request sees that status and returns 404 without inserting another row. I’ll update the plan to say that.
+
+Yes. A second request from the same user or another user is covered by the `pending` status.
+
+The first miss inserts one row with `status` set to `pending` and returns 404. A later lookup for that same span finds that row. While `status` is still `pending`, the response is 404 again. No second row is inserted, and the first `user_id` stays as it was.
+
+When a `PUT` changes `status` to `aigenerated`, `editorpicked`, or `approved`, the next matching lookup returns 200 and the row. If the stored text does not match the request, the response stays 400.
+
+---
+
+**User**
+
+ok, implement the plan for me
+
+---
+
+**Cursor**
+
+I'll update `GET /entries/lookup` so a miss saves one pending placeholder and later requests stay 404 until that status changes.
+
+`GET /entries/lookup` now saves a pending row when the span is missing, and the response stays 404 while that status is `pending`.
+
+The request needs `user_id` as well as the existing parameters:
+
+```text
+/entries/lookup?input_text=cat&media_id=1&sentence_id=9&start_index=1&end_index=4&user_id=user_1
+```
+
+The first miss inserts one row with the text, span, and `user_id`. `definition` is empty in both languages, `part_of_speech` is empty, `usage` is `[]`, and `status` is `pending`. The response is still `{ "error": "entry not found" }`.
+
+A later request for that same span, from the same user or another user, returns 404 again. It does not insert a second row, and the first `user_id` stays. A different `input_text` for that span returns 400. After a `PUT` changes `status` to `aigenerated`, `editorpicked`, or `approved`, the next matching lookup returns 200 and the row.
 
