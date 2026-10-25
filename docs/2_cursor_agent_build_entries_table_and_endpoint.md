@@ -1,5 +1,5 @@
 # Cloudflare plugin addition
-_Exported on 10/25/2026 at 07:03:11 GMT+7 from Cursor (3.27.12)_
+_Exported on 10/25/2026 at 07:09:22 GMT+7 from Cursor (3.27.12)_
 
 ---
 
@@ -794,4 +794,38 @@ The remote database still has the old text. Apply the same file there with:
 ```bash
 npx wrangler d1 migrations apply commonvocab --remote
 ```
+
+---
+
+**User**
+
+how to insert a new row using insomnia now
+
+---
+
+**Cursor**
+
+The create request now needs `definition` as an object, plus `part_of_speech` and `status`. I’ll check the current required fields so the Insomnia body matches the route.
+
+In Insomnia, create a **POST** request to `http://localhost:8787/entries`. `bun run dev` has to be running. Set the body type to **JSON** and paste this:
+
+```json
+{
+  "input_text": "it was worth it",
+  "definition": {
+    "vietnamese": "nó đáng lắm",
+    "english": "it was worth it"
+  },
+  "media_id": "1",
+  "sentence_id": "1",
+  "start_index": 5,
+  "end_index": 20,
+  "part_of_speech": "phrase",
+  "status": "pending"
+}
+```
+
+`definition` is an object now, so both `vietnamese` and `english` sit inside it. Insomnia sets `Content-Type: application/json` when the body type is JSON.
+
+Send the request. A new row returns **201**, and `definition` comes back as that same object. `start_index` and `end_index` stay numbers, without quotes. `status` has to be one of `pending`, `aigenerated`, `editorpicked`, or `approved`. A plain string in `definition` returns **400** with `definition must be an object`.
 

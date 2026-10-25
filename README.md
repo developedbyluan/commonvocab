@@ -266,3 +266,19 @@ WHERE json_valid(definition) = 0;
 
 That puts the old sentence in `english` and leaves `vietnamese` empty. Fill in the Vietnamese text with a later `PUT`. The `PUT` body must include both strings, because `requiredDefinition` rejects an empty one.
 
+## 9. [UPDATE] INSERT A NEW ENTRY/VOCAB (local dev) after modifying DEFINITION column's data structure
+```json
+{
+  "input_text": "it was worth it",
+  "definition": {
+    "vietnamese": "nó đáng lắm",
+    "english": "it was worth it"
+  },
+  "media_id": "1",
+  "sentence_id": "1",
+  "start_index": 5,
+  "end_index": 20,
+  "part_of_speech": "phrase",
+  "status": "pending"
+}
+```
