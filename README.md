@@ -353,6 +353,7 @@ Below is an example:
 ```
 
 ## 12. REQUIRE `user_id` when requesting `entries/lookup`
+
 This change is needed because now an unknown lookup will be stored with placeholders for unknown information while still returning 404 to users.
 
 - METHOD: GET
@@ -364,3 +365,61 @@ This change is needed because now an unknown lookup will be stored with placehol
   - end_index
   - input_text
   - user_id // new param added
+
+## 13. [UPDATE] INSERT A NEW ENTRY/VOCAB (local dev) after adding a new column `subtitles`
+
+Here's an example:
+
+```json
+{
+  "input_text": "it was worth it",
+  "definition": {
+    "vietnamese": "nó đáng lắm",
+    "english": "it was worth it"
+  },
+  "media_id": "1",
+  "sentence_id": "1",
+  "start_index": 5,
+  "end_index": 20,
+  "part_of_speech": "phrase",
+  "status": "pending",
+  "usage": [
+    {
+      "id": 0,
+      "image": { "url": "", "alt": "" },
+      "text": { "english": "", "vietnamese": "" },
+      "note": { "english": "", "vietnamese": "" }
+    }
+  ],
+  "user_id": "user_3JfBd7NGG2fv7pUKpN3vL2s2wBG",
+  "subtitles": [
+    {
+      "id": 1,
+      "target": "When someone is well-behaved,",
+      "mine": "Khi ai đó cư xử đúng mực,",
+      "ipa": "wɛn ˈsʌmwʌn ɪz ˌwɛl bɪˈheɪvd",
+      "start": 0.0,
+      "end": 0.0,
+      "speaker": "Narrator:"
+    },
+    {
+      "id": 2,
+      "target": "it means they act in a polite, proper, and acceptable way,",
+      "mine": "điều đó có nghĩa là họ cư xử một cách lịch sự, đúng đắn và phù hợp,",
+      "ipa": "ɪt minz ðeɪ ækt ɪn ə pəˈlaɪt ˈprɑpɚ ænd əkˈsɛptəbəl weɪ",
+      "start": 0.0,
+      "end": 0.0,
+      "speaker": "Narrator:"
+    },
+    {
+      "id": 3,
+      "target": "often following rules and showing good manners.",
+      "mine": "thường tuân thủ các quy tắc và thể hiện phép lịch sự.",
+      "ipa": "ˈɔfən ˈfɑloʊɪŋ rulz ænd ˈʃoʊɪŋ ɡʊd ˈmænɚz",
+      "start": 0.0,
+      "end": 0.0,
+      "speaker": "Narrator:"
+    }
+  ]
+}
+```

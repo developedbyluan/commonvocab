@@ -1,5 +1,5 @@
 # Cloudflare plugin addition
-_Exported on 10/25/2026 at 22:46:36 GMT+7 from Cursor (3.27.12)_
+_Exported on 10/25/2026 at 23:11:41 GMT+7 from Cursor (3.27.12)_
 
 ---
 
@@ -1096,4 +1096,76 @@ The request needs `user_id` as well as the existing parameters:
 The first miss inserts one row with the text, span, and `user_id`. `definition` is empty in both languages, `part_of_speech` is empty, `usage` is `[]`, and `status` is `pending`. The response is still `{ "error": "entry not found" }`.
 
 A later request for that same span, from the same user or another user, returns 404 again. It does not insert a second row, and the first `user_id` stays. A different `input_text` for that span returns 400. After a `PUT` changes `status` to `aigenerated`, `editorpicked`, or `approved`, the next matching lookup returns 200 and the row.
+
+---
+
+**User**
+
+teach me how to add a new column with data structure like the example below:
+```
+[
+  {
+    "id": 1,
+    "target": "When someone is well-behaved,",
+    "mine": "Khi ai đó cư xử đúng mực,",
+    "ipa": "wɛn ˈsʌmwʌn ɪz ˌwɛl bɪˈheɪvd",
+    "start": 0.00,
+    "end": 0.00,
+    "speaker": "Narrator:"
+  },
+  {
+    "id": 2,
+    "target": "it means they act in a polite, proper, and acceptable way,",
+    "mine": "điều đó có nghĩa là họ cư xử một cách lịch sự, đúng đắn và phù hợp,",
+    "ipa": "ɪt minz ðeɪ ækt ɪn ə pəˈlaɪt ˈprɑpɚ ænd əkˈsɛptəbəl weɪ",
+    "start": 0.00,
+    "end": 0.00,
+    "speaker": "Narrator:"
+  },
+  {
+    "id": 3,
+    "target": "often following rules and showing good manners.",
+    "mine": "thường tuân thủ các quy tắc và thể hiện phép lịch sự.",
+    "ipa": "ˈɔfən ˈfɑloʊɪŋ rulz ænd ˈʃoʊɪŋ ɡʊd ˈmænɚz",
+    "start": 0.00,
+    "end": 0.00,
+    "speaker": "Narrator:"
+  }
+]
+```
+Remember it is ok for this column to accept an empty array '[]'
+
+---
+
+**Cursor**
+
+This matches the `usage` column: a JSON array stored as text, and `[]` is valid. The lesson needs a column name before the migration and the Worker field can be written.
+
+**Column name**
+
+> **What should the new column be named? The example is a list of spoken lines with target text, your translation, IPA, timing, and a speaker.**
+> - transcript
+> - lines
+> - captions
+> - segments
+>
+> Answer: subtitles
+
+---
+
+**User**
+
+implement the plan for me
+
+---
+
+**Cursor**
+
+I'll add the `subtitles` column and wire it through the Worker the same way `usage` is stored, including an empty array as a valid value.
+
+`subtitles` is now a text column on `entries`, locally and on the remote database. It stores an array of timed lines, and `[]` is valid.
+
+Each line needs `id`, `target`, `mine`, `ipa`, `start`, `end`, and `speaker`. `start` and `end` are seconds, so `1.25` is allowed, and `end` must be at least `start`. A missing `subtitles` field returns 400 with `subtitles must be an array`.
+
+Existing rows, and a lookup placeholder that does not send this field, receive `[]`.
 

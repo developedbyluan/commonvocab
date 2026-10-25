@@ -22,6 +22,16 @@ type UsageExample = {
   note: LocalizedText;
 };
 
+type SubtitleLine = {
+  id: number;
+  target: string;
+  mine: string;
+  ipa: string;
+  start: number;
+  end: number;
+  speaker: string;
+};
+
 type Entry = {
   id: number;
   input_text: string;
@@ -34,22 +44,24 @@ type Entry = {
   status: "pending" | "aigenerated" | "editorpicked" | "approved";
   usage: UsageExample[];
   user_id: string;
+  subtitles: SubtitleLine[];
 };
 
 type EntryInput = Omit<Entry, "id">;
 
-type StoredEntry = Omit<Entry, "definition" | "usage"> & {
+type StoredEntry = Omit<Entry, "definition" | "usage" | "subtitles"> & {
   definition: string;
   usage: string;
+  subtitles: string;
 };
 
 type FieldError = { error: string };
 
 const COLUMNS =
-  "id, input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id";
+  "id, input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, subtitles";
 
 const PUBLIC_COLUMNS =
-  "input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id";
+  "input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, subtitles";
 
 const entries = new Hono<{ Bindings: CloudflareBindings }>();
 
@@ -174,8 +186,8 @@ entries.post("/", async (c) => {
 
   try {
     const row = await c.env.DB.prepare(
-      `INSERT INTO entries (input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO entries (input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, subtitles)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING ${COLUMNS}`,
     )
       .bind(
@@ -189,6 +201,7 @@ entries.post("/", async (c) => {
         input.status,
         JSON.stringify(input.usage),
         input.user_id,
+        JSON.stringify(input.subtitles),
       )
       .first<StoredEntry>();
 
@@ -212,7 +225,7 @@ entries.put("/:id", async (c) => {
   try {
     const row = await c.env.DB.prepare(
       `UPDATE entries
-       SET input_text = ?, definition = ?, media_id = ?, sentence_id = ?, start_index = ?, end_index = ?, part_of_speech = ?, status = ?, usage = ?, user_id = ?
+       SET input_text = ?, definition = ?, media_id = ?, sentence_id = ?, start_index = ?, end_index = ?, part_of_speech = ?, status = ?, usage = ?, user_id = ?, subtitles = ?
        WHERE id = ?
        RETURNING ${COLUMNS}`,
     )
@@ -227,6 +240,7 @@ entries.put("/:id", async (c) => {
         input.status,
         JSON.stringify(input.usage),
         input.user_id,
+        JSON.stringify(input.subtitles),
         id,
       )
       .first<StoredEntry>();
@@ -300,6 +314,8 @@ function parseEntry(value: unknown): EntryInput | FieldError {
   if (isFieldError(status)) return status;
   const usage = requiredUsage(body.usage);
   if (isFieldError(usage)) return usage;
+  const subtitles = requiredSubtitles(body.subtitles);
+  if (isFieldError(subtitles)) return subtitles;
   const userId = requiredUserId(body.user_id);
   if (isFieldError(userId)) return userId;
   return {
@@ -313,7 +329,52 @@ function parseEntry(value: unknown): EntryInput | FieldError {
     status: status,
     usage,
     user_id: userId,
+    subtitles,
   };
+}
+
+function requiredSubtitles(value: unknown): SubtitleLine[] | FieldError {
+  if (!Array.isArray(value)) return { error: "subtitles must be an array" };
+  const lines: SubtitleLine[] = [];
+  for (const item of value) {
+    const line = requiredSubtitleLine(item);
+    if (isFieldError(line)) return line;
+    lines.push(line);
+  }
+  return lines;
+}
+
+function requiredSubtitleLine(value: unknown): SubtitleLine | FieldError {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { error: "subtitles item must be an object" };
+  }
+  const body = value as Record<string, unknown>;
+  const id = requiredIndex(body.id, "subtitles.id");
+  if (isFieldError(id)) return id;
+  const target = requiredString(body.target, "subtitles.target");
+  if (isFieldError(target)) return target;
+  const mine = requiredString(body.mine, "subtitles.mine");
+  if (isFieldError(mine)) return mine;
+  const ipa = requiredString(body.ipa, "subtitles.ipa");
+  if (isFieldError(ipa)) return ipa;
+  const start = requiredTime(body.start, "subtitles.start");
+  if (isFieldError(start)) return start;
+  const end = requiredTime(body.end, "subtitles.end");
+  if (isFieldError(end)) return end;
+  if (end < start) {
+    return { error: "subtitles.end must be greater than or equal to subtitles.start" };
+  }
+  const speaker = requiredString(body.speaker, "subtitles.speaker");
+  if (isFieldError(speaker)) return speaker;
+  return { id, target, mine, ipa, start, end, speaker };
+}
+
+function requiredTime(value: unknown, field: string): number | FieldError {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return { error: `${field} must be a number` };
+  }
+  if (value < 0) return { error: `${field} must be greater than or equal to 0` };
+  return value;
 }
 
 function requiredQueryUserId(value: string | undefined): string | FieldError {
@@ -481,7 +542,18 @@ function parseId(value: string): number | null {
 }
 
 function isFieldError(
-  value: string | number | null | Definition | UsageExample | UsageExample[] | UsageImage | LocalizedText | FieldError,
+  value:
+    | string
+    | number
+    | null
+    | Definition
+    | UsageExample
+    | UsageExample[]
+    | UsageImage
+    | LocalizedText
+    | SubtitleLine
+    | SubtitleLine[]
+    | FieldError,
 ): value is FieldError {
   return typeof value === "object" && value !== null && "error" in value;
 }
@@ -502,7 +574,40 @@ function withStoredColumns(row: StoredEntry): Entry {
     ...row,
     definition: parseStoredDefinition(row.definition),
     usage: parseStoredUsage(row.usage),
+    subtitles: parseStoredSubtitles(row.subtitles),
   };
+}
+
+function parseStoredSubtitles(value: string): SubtitleLine[] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (Array.isArray(parsed) && parsed.every(isSubtitleLine)) return parsed;
+  } catch {
+    // Rows created before this column, or a bad stored value, read as no lines.
+  }
+  return [];
+}
+
+function isSubtitleLine(value: unknown): value is SubtitleLine {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    typeof body.id === "number" &&
+    Number.isInteger(body.id) &&
+    body.id >= 0 &&
+    typeof body.target === "string" &&
+    typeof body.mine === "string" &&
+    typeof body.ipa === "string" &&
+    typeof body.speaker === "string" &&
+    typeof body.start === "number" &&
+    Number.isFinite(body.start) &&
+    body.start >= 0 &&
+    typeof body.end === "number" &&
+    Number.isFinite(body.end) &&
+    body.end >= body.start
+  );
 }
 
 function parseStoredUsage(value: string): UsageExample[] {
