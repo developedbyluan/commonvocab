@@ -66,6 +66,20 @@ const PUBLIC_COLUMNS =
 
 const entries = new Hono<{ Bindings: CloudflareBindings }>();
 
+entries.use("*", async (c, next) => {
+  const ip = c.req.header("cf-connecting-ip") ?? "unknown";
+  if (c.req.path.endsWith("/lookup")) {
+    const lookup = await c.env.LOOKUP_LIMITER.limit({
+      key: lookupRateLimitKey(c.req.query("user_id"), ip),
+    });
+    if (!lookup.success) return c.json({ error: "too many requests" }, 429);
+  }
+
+  const shared = await c.env.ENTRIES_LIMITER.limit({ key: ip });
+  if (!shared.success) return c.json({ error: "too many requests" }, 429);
+  await next();
+});
+
 entries.get("/", async (c) => {
   const inputText = optionalText(c.req.query("input_text"), "input_text");
   if (isFieldError(inputText)) return c.json(inputText, 400);
@@ -381,6 +395,12 @@ function requiredTime(value: unknown, field: string): number | FieldError {
   }
   if (value < 0) return { error: `${field} must be greater than or equal to 0` };
   return value;
+}
+
+function lookupRateLimitKey(userId: string | undefined, ip: string): string {
+  const key = userId?.trim() ?? "";
+  if (key.startsWith("user_") && key.length <= 64) return key;
+  return ip;
 }
 
 function requiredQueryUserId(value: string | undefined): string | FieldError {

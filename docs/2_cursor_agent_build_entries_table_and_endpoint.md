@@ -1,5 +1,5 @@
 # Cloudflare plugin addition
-_Exported on 10/25/2026 at 23:19:43 GMT+7 from Cursor (3.27.12)_
+_Exported on 10/25/2026 at 23:40:27 GMT+7 from Cursor (3.27.12)_
 
 ---
 
@@ -1188,4 +1188,58 @@ add a new column and call it `phonetic`
 ```
 
 A missing value returns 400 with `phonetic must be a string`. An empty string returns 400 with `phonetic must not be empty`. Rows that already exist, and lookup placeholders, keep `""` until a `PUT` sets the pronunciation.
+
+---
+
+**User**
+
+I want to protect the endpoints of entries @src/entries.ts from attack and abuse such as DDOS, is it possible?
+
+---
+
+**Cursor**
+
+Yes. The Worker already sits on Cloudflare’s network, so large floods are absorbed before they reach your code. That does not stop someone from calling `POST /entries` or `GET /entries/lookup` over and over. Those routes have no login check, and a lookup miss writes a new row.
+
+Three layers fit this app.
+
+**Limit how often one caller can hit the routes.** Add a Workers Rate Limiting binding in `wrangler.jsonc`, then check it at the top of the `entries` router. Use `user_id` when the query has one, and the client IP otherwise. When the limit is passed, return 429. This works on `workers.dev` without a custom domain.
+
+**Put the API on a domain you control** if you want Cloudflare WAF rate limiting rules and bot rules from the dashboard. Those rules attach to your zone. They do not attach to `commonvocab.developedbyluan.workers.dev`, because that hostname belongs to Cloudflare’s zone.
+
+**Require a caller to prove who they are before a write.** A shared API token, or Cloudflare Access in front of the Worker, stops anonymous creates, updates, deletes, and lookup inserts. Turnstile fits a browser page. Insomnia and `curl` need a token instead.
+
+Also cap the size of `usage` and `subtitles`. A valid JSON body can still contain a huge array, and each one is stored in D1. Reject arrays above a small limit, such as 100 items, with 400.
+
+The lookup insert is the sharpest abuse point: every new span creates a row and still returns 404. Rate limiting that route, and requiring a real `user_id` you have issued, matters more than a generic DDoS product.
+
+---
+
+**User**
+
+plan the simple implementation for the endpoints, especially the lookup, it looks like this one `Limit how often one caller can hit the routes. ` is suitible to my request right?
+
+---
+
+**Cursor**
+
+Yes. A Workers rate limit on these routes is the right simple control, and it works on `workers.dev`. I’ll plan a tighter limit for lookup and a looser one for the other entry routes.
+
+---
+
+**User**
+
+perfect. implement this plan for me
+
+---
+
+**Cursor**
+
+The rate limit belongs on the entry routes, with a tighter cap on lookup. I’ll add the two bindings and check them before any database call.
+
+The entry routes now reject a caller who goes too fast, before any database work. Lookup allows **10 requests per `user_id` per minute**. The other `/entries` routes allow **30 requests per IP per minute**. Lookup counts against both limits.
+
+A local burst confirmed it. The first 10 lookups for `user_rate` returned 404 and created one pending row. Requests 11 and 12 returned `{ "error": "too many requests" }` with status 429, and no second row was inserted. A different `user_id` was still allowed. `GET /entries` still returned 200. The test row was deleted.
+
+`GET /` is not limited. `bun run deploy` publishes these limits to `https://commonvocab.developedbyluan.workers.dev`.
 
