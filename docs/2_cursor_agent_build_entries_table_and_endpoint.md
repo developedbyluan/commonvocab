@@ -1,5 +1,5 @@
 # Cloudflare plugin addition
-_Exported on 10/25/2026 at 06:54:35 GMT+7 from Cursor (3.27.12)_
+_Exported on 10/25/2026 at 07:03:11 GMT+7 from Cursor (3.27.12)_
 
 ---
 
@@ -766,4 +766,32 @@ I'll update `src/entries.ts` so `definition` is saved as JSON and returned as an
 The Worker checks that both fields are non-empty strings, stores the object as JSON text, and turns it back into an object in the response. A plain string for `definition` returns 400 with `definition must be an object`.
 
 Rows saved before this change still contain a single sentence in the database. Those responses use that sentence as `english` and leave `vietnamese` empty. A `PUT` with both strings replaces that stored value.
+
+---
+
+**User**
+
+@/Users/developedbyluan/.cursor/projects/Users-developedbyluan-Desktop-commonvocab/terminals/2.txt:31-57 I implement step 4, but failed
+
+---
+
+**Cursor**
+
+The migration stopped on malformed JSON. I’ll read the SQL and the current `definition` values to see which row broke it.
+
+The migration failed because this SQLite version throws when `json_extract` reads a plain sentence. I’ll guard the update with `json_valid` and apply it to the local database.
+
+The migration failed because `json_extract` throws `malformed JSON` when `definition` is still a plain sentence, such as `the cost was justified`. The `WHERE` clause ran that function on every existing row.
+
+`json_valid` returns `0` for those sentences and does not throw, so the update now uses that check. It is applied on the local database. Each old sentence is now stored as `english`, with `vietnamese` empty:
+
+```json
+{"vietnamese":"","english":"the cost was justified"}
+```
+
+The remote database still has the old text. Apply the same file there with:
+
+```bash
+npx wrangler d1 migrations apply commonvocab --remote
+```
 
