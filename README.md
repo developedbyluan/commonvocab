@@ -257,9 +257,11 @@ A saved row then responds as:
 The current values are plain sentences, such as `"the cost was justified"`. Add `migrations/0004_definition_json.sql` and apply it locally and remotely:
 
 ```sql
+-- json_extract raises "malformed JSON" on the older plain-text definitions.
+-- json_valid returns 0 for those rows and leaves existing JSON objects unchanged.
 UPDATE entries
 SET definition = json_object('vietnamese', '', 'english', definition)
-WHERE json_extract(definition, '$.english') IS NULL;
+WHERE json_valid(definition) = 0;
 ```
 
 That puts the old sentence in `english` and leaves `vietnamese` empty. Fill in the Vietnamese text with a later `PUT`. The `PUT` body must include both strings, because `requiredDefinition` rejects an empty one.
