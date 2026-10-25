@@ -322,3 +322,32 @@ An example:
   ]
 }
 ```
+
+## 11. INSERT A NEW ENTRY/VOCAB AFTER ADDING NEW COLUMN `user_id`
+
+Below is an example:
+
+```json
+{
+  "input_text": "it was worth it",
+  "definition": {
+    "vietnamese": "nó đáng lắm",
+    "english": "it was worth it"
+  },
+  "media_id": "1",
+  "sentence_id": "1",
+  "start_index": 5,
+  "end_index": 20,
+  "part_of_speech": "phrase",
+  "status": "pending",
+  "usage": [
+    {
+      "id": 0,
+      "image": { "url": "", "alt": "" },
+      "text": { "english": "", "vietnamese": "" },
+      "note": { "english": "", "vietnamese": "" }
+    }
+  ],
+  "user_id": "user_3JfBd7NGG2fv7pUKpN3vL2s2wBG"
+}
+```

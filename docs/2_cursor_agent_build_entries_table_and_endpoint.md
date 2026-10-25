@@ -1,5 +1,5 @@
 # Cloudflare plugin addition
-_Exported on 10/25/2026 at 07:09:22 GMT+7 from Cursor (3.27.12)_
+_Exported on 10/25/2026 at 22:23:52 GMT+7 from Cursor (3.27.12)_
 
 ---
 
@@ -828,4 +828,195 @@ In Insomnia, create a **POST** request to `http://localhost:8787/entries`. `bun 
 `definition` is an object now, so both `vietnamese` and `english` sit inside it. Insomnia sets `Content-Type: application/json` when the body type is JSON.
 
 Send the request. A new row returns **201**, and `definition` comes back as that same object. `start_index` and `end_index` stay numbers, without quotes. `status` has to be one of `pending`, `aigenerated`, `editorpicked`, or `approved`. A plain string in `definition` returns **400** with `definition must be an object`.
+
+---
+
+**User**
+
+teach me step by step, in detail, how to add a new column named usage which has a data structure as the example below:
+```json
+[
+  {
+    "id": 0,
+    "image": {
+      "url": "",
+      "alt": ""
+    },
+    "text": {
+      "english": "",
+      "vietnamese": ""
+    },
+    "note": {
+      "english": "",
+      "vietnamese: ""
+    }
+  }
+]
+```
+ask me any question if needed
+
+---
+
+**Cursor**
+
+The `usage` column can follow the same JSON-in-text pattern as `definition`. Your sample is almost valid JSON; one key is missing a quote, and that changes the shape the Worker should accept.
+
+---
+
+**User**
+
+Implement the plan as specified, it is attached for your reference. Do NOT edit the plan file itself.
+
+To-do's from the plan have already been created. Do not create them again. Mark them as in_progress as you work, starting with the first one. Don't stop until you have completed all the to-dos.
+
+---
+
+**Cursor**
+
+I'll add the `usage` column and wire it through the Worker the same way `definition` is stored. Starting with the migration.
+
+The migration file is in place. Applying it was skipped, so I’ll wire `usage` through the Worker and then apply the migration again.
+
+`usage` is now a column on `entries`, locally and on the remote database. Each value is a JSON array of examples, and existing rows read back as `[]`.
+
+A create or update body includes it like this:
+
+```json
+"usage": [
+  {
+    "id": 0,
+    "image": { "url": "", "alt": "" },
+    "text": { "english": "", "vietnamese": "" },
+    "note": { "english": "", "vietnamese": "" }
+  }
+]
+```
+
+Empty strings and an empty array are valid. A missing `usage` returns 400 with `usage must be an array`. A missing nested field, such as `usage.note.vietnamese`, also returns 400.
+
+The local dev server had stopped during the reload. Start it again with `bun run dev` before sending the request from Insomnia.
+
+---
+
+**User**
+
+<timestamp>Sunday, Oct 25, 2026, 9:54 PM (UTC+7)</timestamp>
+<system_notification>
+The following task has finished. If you were already aware, ignore this notification and do not restate prior responses.
+
+<task>
+kind: shell
+status: aborted
+task_id: 361459
+title: Start local Worker outside the sandbox
+tool_call_id: call-b0f645a1-9290-4399-95de-34653edf1e79-175
+fc_fcf0b823-7c35-9c44-917b-862c1ac8f1cb_0
+output_path: /Users/developedbyluan/.cursor/projects/Users-developedbyluan-Desktop-commonvocab/terminals/361459.txt
+</task>
+</system_notification>
+<user_query>Briefly inform the user about the task result and perform any follow-up actions (if needed). If there's no follow-ups needed, don't explicitly say that.</user_query>
+
+---
+
+**Cursor**
+
+The temporary local Worker used to check the `usage` routes has stopped, so port 8787 is free again. Start your own server with `bun run dev` before sending a request from Insomnia.
+
+---
+
+**User**
+
+give me a step by step guide on how to add a new column named user_id, type: string, the string should start with `user_`
+
+---
+
+**Cursor**
+
+`user_id` is a plain text column, so it follows the same path as `part_of_speech`, with one extra rule: the value has to begin with `user_`. I’ll match the guide to the current `entries` routes.
+
+Add `user_id` as a `TEXT` column in a new migration, then require every create and update to send a string that begins with `user_`. Leave `migrations/0005_add_usage.sql` unchanged.
+
+## 1. Create `migrations/0006_add_user_id.sql`
+
+```sql
+ALTER TABLE entries
+ADD COLUMN user_id TEXT NOT NULL DEFAULT 'user_'
+CHECK (substr(user_id, 1, 5) = 'user_');
+```
+
+`TEXT` stores the string. `DEFAULT 'user_'` fills the rows you already have, because a new `NOT NULL` column needs a value for those rows. `substr(user_id, 1, 5)` reads the first five characters, so the database only accepts values such as `user_1` and `user_abc`.
+
+Use `substr` here. In SQL `LIKE`, `_` means “any one character,” so `LIKE 'user_%'` would also accept `userX`.
+
+Apply it locally, then remotely:
+
+```bash
+npx wrangler d1 migrations apply commonvocab --local
+npx wrangler d1 migrations apply commonvocab --remote
+```
+
+The same `.sqlite` file under `.wrangler/state/v3/d1` gains the column. A new file is not created.
+
+## 2. Add the field in `src/entries.ts`
+
+Add `user_id: string` to the `Entry` type, after `usage`. `EntryInput` omits only `id`, so it includes `user_id` automatically.
+
+`user_id` is a normal string in D1, so `StoredEntry` stays as it is. Append `, user_id` to both `COLUMNS` and `PUBLIC_COLUMNS`.
+
+## 3. Reject any string that does not start with `user_`
+
+In `parseEntry`, after the `usage` check, read the field and put `user_id` on the returned object:
+
+```ts
+function requiredUserId(value: unknown): string | FieldError {
+  const userId = requiredText(value, "user_id", true);
+  if (isFieldError(userId)) return userId;
+  if (!userId.startsWith("user_")) {
+    return { error: "user_id must start with user_" };
+  }
+  return userId;
+}
+```
+
+`requiredText` already trims the value and rejects an empty string. `user_1` passes. `1` and `User_1` return 400, because the prefix is lowercase `user_`.
+
+## 4. Write the column
+
+Add `user_id` to the `INSERT` column list and add one more `?`. Bind `input.user_id` after `JSON.stringify(input.usage)`.
+
+On `PUT`, add `user_id = ?` before `WHERE id = ?`, and bind `input.user_id` before `id`.
+
+Responses already return every selected column, so `user_id` appears in `GET`, `POST`, `PUT`, and `DELETE` without a JSON parse step.
+
+## 5. Send it from Insomnia
+
+`POST http://localhost:8787/entries` with body type JSON. Add this field to the body you already send:
+
+```json
+"user_id": "user_1"
+```
+
+A valid create returns **201** and includes `"user_id": "user_1"`. `"user_id": "1"` returns **400** with `user_id must start with user_`.
+
+---
+
+**User**
+
+implement it for me
+
+---
+
+**Cursor**
+
+I'll add the `user_id` column and require every value to start with `user_`. First I'm checking what is already in the Worker and the migrations.
+
+The type already includes `user_id`. I'll add the migration and connect that field through validation, inserts, and updates.
+
+`user_id` is now a text column on `entries`, both locally and on the remote database. Every create and update must send a string that starts with `user_`.
+
+```json
+"user_id": "user_1"
+```
+
+`user_1` is stored and returned. `1` and `User_1` return 400 with `user_id must start with user_`. Rows that already existed received the default `user_`.
 

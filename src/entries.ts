@@ -33,6 +33,7 @@ type Entry = {
   part_of_speech: string;
   status: "pending" | "aigenerated" | "editorpicked" | "approved";
   usage: UsageExample[];
+  user_id: string;
 };
 
 type EntryInput = Omit<Entry, "id">;
@@ -45,10 +46,10 @@ type StoredEntry = Omit<Entry, "definition" | "usage"> & {
 type FieldError = { error: string };
 
 const COLUMNS =
-  "id, input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage";
+  "id, input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id";
 
 const PUBLIC_COLUMNS =
-  "input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage";
+  "input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id";
 
 const entries = new Hono<{ Bindings: CloudflareBindings }>();
 
@@ -150,8 +151,8 @@ entries.post("/", async (c) => {
 
   try {
     const row = await c.env.DB.prepare(
-      `INSERT INTO entries (input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO entries (input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING ${COLUMNS}`,
     )
       .bind(
@@ -164,6 +165,7 @@ entries.post("/", async (c) => {
         input.part_of_speech,
         input.status,
         JSON.stringify(input.usage),
+        input.user_id,
       )
       .first<StoredEntry>();
 
@@ -187,7 +189,7 @@ entries.put("/:id", async (c) => {
   try {
     const row = await c.env.DB.prepare(
       `UPDATE entries
-       SET input_text = ?, definition = ?, media_id = ?, sentence_id = ?, start_index = ?, end_index = ?, part_of_speech = ?, status = ?, usage = ?
+       SET input_text = ?, definition = ?, media_id = ?, sentence_id = ?, start_index = ?, end_index = ?, part_of_speech = ?, status = ?, usage = ?, user_id = ?
        WHERE id = ?
        RETURNING ${COLUMNS}`,
     )
@@ -201,6 +203,7 @@ entries.put("/:id", async (c) => {
         input.part_of_speech,
         input.status,
         JSON.stringify(input.usage),
+        input.user_id,
         id,
       )
       .first<StoredEntry>();
@@ -274,6 +277,8 @@ function parseEntry(value: unknown): EntryInput | FieldError {
   if (isFieldError(status)) return status;
   const usage = requiredUsage(body.usage);
   if (isFieldError(usage)) return usage;
+  const userId = requiredUserId(body.user_id);
+  if (isFieldError(userId)) return userId;
   return {
     input_text: inputText,
     definition,
@@ -284,7 +289,17 @@ function parseEntry(value: unknown): EntryInput | FieldError {
     part_of_speech: partOfSpeech,
     status: status,
     usage,
+    user_id: userId,
   };
+}
+
+function requiredUserId(value: unknown): string | FieldError {
+  const userId = requiredText(value, "user_id", true);
+  if (isFieldError(userId)) return userId;
+  if (!userId.startsWith("user_")) {
+    return { error: "user_id must start with user_" };
+  }
+  return userId;
 }
 
 function requiredUsage(value: unknown): UsageExample[] | FieldError {
