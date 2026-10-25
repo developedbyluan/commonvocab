@@ -4,16 +4,16 @@ overview: A step-by-step lesson for adding a `usage` column that stores an array
 todos:
   - id: migration
     content: Add migrations/0005_add_usage.sql with TEXT NOT NULL DEFAULT '[]', then apply it locally and remotely.
-    status: pending
+    status: completed
   - id: types
     content: Add UsageExample types, extend Entry and StoredEntry, and append usage to both column lists.
-    status: pending
+    status: completed
   - id: validate
     content: Validate the usage array in parseEntry, allowing empty strings and requiring every nested key.
-    status: pending
+    status: completed
   - id: persist
     content: JSON.stringify usage on write and parse it back to an array on every response.
-    status: pending
+    status: completed
 isProject: false
 ---
 

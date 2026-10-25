@@ -291,21 +291,34 @@ That puts the old sentence in `english` and leaves `vietnamese` empty. Fill in t
 }
 ```
 
-## 10. NEW COLUMN `usage`
-### 1. Add the migration
+## 10. INSERT A NEW ENTRY/VOCAB AFTER ADDING NEW COLUMN `usage`
 
-Create [migrations/0005_add_usage.sql](migrations/0005_add_usage.sql). Leave [migrations/0004_definition_json.sql](migrations/0004_definition_json.sql) unchanged.
+An example:
 
-```sql
-ALTER TABLE entries
-ADD COLUMN usage TEXT NOT NULL DEFAULT '[]';
-```
+- Method: POST
+- Endpoint: http://localhost:8787/entries
+- Body -> JSON:
 
-`DEFAULT '[]'` fills every row that already exists. Do not call `json_extract` here. On this SQLite version it throws `malformed JSON` for values that are not already JSON, which is what broke migration `0004` before it was changed to `json_valid`.
-
-Apply it to the local database, then to the remote database:
-
-```bash
-npx wrangler d1 migrations apply commonvocab --local
-npx wrangler d1 migrations apply commonvocab --remote
+```json
+{
+  "input_text": "it was worth it",
+  "definition": {
+    "vietnamese": "nó đáng lắm",
+    "english": "it was worth it"
+  },
+  "media_id": "1",
+  "sentence_id": "1",
+  "start_index": 5,
+  "end_index": 20,
+  "part_of_speech": "phrase",
+  "status": "pending",
+  "usage": [
+    {
+      "id": 0,
+      "image": { "url": "", "alt": "" },
+      "text": { "english": "", "vietnamese": "" },
+      "note": { "english": "", "vietnamese": "" }
+    }
+  ]
+}
 ```

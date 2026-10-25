@@ -5,6 +5,23 @@ type Definition = {
   english: string;
 };
 
+type LocalizedText = {
+  english: string;
+  vietnamese: string;
+};
+
+type UsageImage = {
+  url: string;
+  alt: string;
+};
+
+type UsageExample = {
+  id: number;
+  image: UsageImage;
+  text: LocalizedText;
+  note: LocalizedText;
+};
+
 type Entry = {
   id: number;
   input_text: string;
@@ -15,19 +32,23 @@ type Entry = {
   end_index: number;
   part_of_speech: string;
   status: "pending" | "aigenerated" | "editorpicked" | "approved";
+  usage: UsageExample[];
 };
 
 type EntryInput = Omit<Entry, "id">;
 
-type StoredEntry = Omit<Entry, "definition"> & { definition: string };
+type StoredEntry = Omit<Entry, "definition" | "usage"> & {
+  definition: string;
+  usage: string;
+};
 
 type FieldError = { error: string };
 
 const COLUMNS =
-  "id, input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status";
+  "id, input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage";
 
 const PUBLIC_COLUMNS =
-  "input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status";
+  "input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage";
 
 const entries = new Hono<{ Bindings: CloudflareBindings }>();
 
@@ -56,7 +77,7 @@ entries.get("/", async (c) => {
       .bind(inputText, mediaId, sentenceId, limit, offset)
       .all<StoredEntry>();
 
-    return c.json(results.map(withDefinition));
+    return c.json(results.map(withStoredColumns));
   } catch (error) {
     return databaseError(c, error);
   }
@@ -101,7 +122,7 @@ entries.get("/lookup", async (c) => {
     const sameText =
       row.input_text.trim().toLowerCase() === inputText.toLowerCase();
     if (!sameText) return c.json({ error: "input text does not match" }, 400);
-    return c.json(withDefinition(row));
+    return c.json(withStoredColumns(row));
   } catch (error) {
     return databaseError(c, error);
   }
@@ -129,8 +150,8 @@ entries.post("/", async (c) => {
 
   try {
     const row = await c.env.DB.prepare(
-      `INSERT INTO entries (input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO entries (input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING ${COLUMNS}`,
     )
       .bind(
@@ -142,11 +163,12 @@ entries.post("/", async (c) => {
         input.end_index,
         input.part_of_speech,
         input.status,
+        JSON.stringify(input.usage),
       )
       .first<StoredEntry>();
 
     if (!row) return c.json({ error: "database query failed" }, 500);
-    return c.json(withDefinition(row), 201);
+    return c.json(withStoredColumns(row), 201);
   } catch (error) {
     return databaseError(c, error);
   }
@@ -165,7 +187,7 @@ entries.put("/:id", async (c) => {
   try {
     const row = await c.env.DB.prepare(
       `UPDATE entries
-       SET input_text = ?, definition = ?, media_id = ?, sentence_id = ?, start_index = ?, end_index = ?, part_of_speech = ?, status = ?
+       SET input_text = ?, definition = ?, media_id = ?, sentence_id = ?, start_index = ?, end_index = ?, part_of_speech = ?, status = ?, usage = ?
        WHERE id = ?
        RETURNING ${COLUMNS}`,
     )
@@ -178,12 +200,13 @@ entries.put("/:id", async (c) => {
         input.end_index,
         input.part_of_speech,
         input.status,
+        JSON.stringify(input.usage),
         id,
       )
       .first<StoredEntry>();
 
     if (!row) return c.json({ error: "entry not found" }, 404);
-    return c.json(withDefinition(row));
+    return c.json(withStoredColumns(row));
   } catch (error) {
     return databaseError(c, error);
   }
@@ -202,7 +225,7 @@ entries.delete("/:id", async (c) => {
       .first<StoredEntry>();
 
     if (!row) return c.json({ error: "entry not found" }, 404);
-    return c.json(withDefinition(row));
+    return c.json(withStoredColumns(row));
   } catch (error) {
     return databaseError(c, error);
   }
@@ -249,6 +272,8 @@ function parseEntry(value: unknown): EntryInput | FieldError {
 
   const status = requiredStatus(body.status);
   if (isFieldError(status)) return status;
+  const usage = requiredUsage(body.usage);
+  if (isFieldError(usage)) return usage;
   return {
     input_text: inputText,
     definition,
@@ -258,7 +283,67 @@ function parseEntry(value: unknown): EntryInput | FieldError {
     end_index: endIndex,
     part_of_speech: partOfSpeech,
     status: status,
+    usage,
   };
+}
+
+function requiredUsage(value: unknown): UsageExample[] | FieldError {
+  if (!Array.isArray(value)) return { error: "usage must be an array" };
+  const examples: UsageExample[] = [];
+  for (const item of value) {
+    const example = requiredUsageExample(item);
+    if (isFieldError(example)) return example;
+    examples.push(example);
+  }
+  return examples;
+}
+
+function requiredUsageExample(value: unknown): UsageExample | FieldError {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { error: "usage item must be an object" };
+  }
+  const body = value as Record<string, unknown>;
+  const id = requiredIndex(body.id, "usage.id");
+  if (isFieldError(id)) return id;
+  const image = requiredUsageImage(body.image);
+  if (isFieldError(image)) return image;
+  const text = requiredLocalizedText(body.text, "usage.text");
+  if (isFieldError(text)) return text;
+  const note = requiredLocalizedText(body.note, "usage.note");
+  if (isFieldError(note)) return note;
+  return { id, image, text, note };
+}
+
+function requiredUsageImage(value: unknown): UsageImage | FieldError {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { error: "usage.image must be an object" };
+  }
+  const body = value as Record<string, unknown>;
+  const url = requiredString(body.url, "usage.image.url");
+  if (isFieldError(url)) return url;
+  const alt = requiredString(body.alt, "usage.image.alt");
+  if (isFieldError(alt)) return alt;
+  return { url, alt };
+}
+
+function requiredLocalizedText(
+  value: unknown,
+  field: string,
+): LocalizedText | FieldError {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { error: `${field} must be an object` };
+  }
+  const body = value as Record<string, unknown>;
+  const english = requiredString(body.english, `${field}.english`);
+  if (isFieldError(english)) return english;
+  const vietnamese = requiredString(body.vietnamese, `${field}.vietnamese`);
+  if (isFieldError(vietnamese)) return vietnamese;
+  return { english, vietnamese };
+}
+
+function requiredString(value: unknown, field: string): string | FieldError {
+  if (typeof value !== "string") return { error: `${field} must be a string` };
+  return value.trim();
 }
 
 function requiredDefinition(value: unknown): Definition | FieldError {
@@ -349,7 +434,7 @@ function parseId(value: string): number | null {
 }
 
 function isFieldError(
-  value: string | number | null | Definition | FieldError,
+  value: string | number | null | Definition | UsageExample | UsageExample[] | UsageImage | LocalizedText | FieldError,
 ): value is FieldError {
   return typeof value === "object" && value !== null && "error" in value;
 }
@@ -365,8 +450,53 @@ async function readJson(c: {
   }
 }
 
-function withDefinition(row: StoredEntry): Entry {
-  return { ...row, definition: parseStoredDefinition(row.definition) };
+function withStoredColumns(row: StoredEntry): Entry {
+  return {
+    ...row,
+    definition: parseStoredDefinition(row.definition),
+    usage: parseStoredUsage(row.usage),
+  };
+}
+
+function parseStoredUsage(value: string): UsageExample[] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (Array.isArray(parsed) && parsed.every(isUsageExample)) return parsed;
+  } catch {
+    // Rows created before this column, or a bad stored value, read as no examples.
+  }
+  return [];
+}
+
+function isUsageExample(value: unknown): value is UsageExample {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    typeof body.id === "number" &&
+    Number.isInteger(body.id) &&
+    body.id >= 0 &&
+    isUsageImage(body.image) &&
+    isLocalizedText(body.text) &&
+    isLocalizedText(body.note)
+  );
+}
+
+function isUsageImage(value: unknown): value is UsageImage {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return typeof body.url === "string" && typeof body.alt === "string";
+}
+
+function isLocalizedText(value: unknown): value is LocalizedText {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return typeof body.english === "string" && typeof body.vietnamese === "string";
 }
 
 function parseStoredDefinition(value: string): Definition {
@@ -392,7 +522,7 @@ async function findEntry(db: D1Database, id: number): Promise<Entry | null> {
     .prepare(`SELECT ${COLUMNS} FROM entries WHERE id = ?`)
     .bind(id)
     .first<StoredEntry>();
-  return row ? withDefinition(row) : null;
+  return row ? withStoredColumns(row) : null;
 }
 
 function databaseError(
