@@ -1,0 +1,6 @@
+ALTER TABLE entries
+ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0
+CHECK (created_at >= 0);
+
+ALTER TABLE entries
+ADD COLUMN updated_at TEXT NOT NULL DEFAULT '[]';

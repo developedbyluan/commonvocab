@@ -48,23 +48,29 @@ type Entry = {
   user_id: string;
   subtitles: SubtitleLine[];
   phonetic: string;
+  created_at: number;
+  updated_at: number[];
 };
 
-type EntryInput = Omit<Entry, "id">;
+type EntryInput = Omit<Entry, "id" | "created_at" | "updated_at">;
 
-type StoredEntry = Omit<Entry, "definition" | "usage" | "subtitles"> & {
+type StoredEntry = Omit<
+  Entry,
+  "definition" | "usage" | "subtitles" | "updated_at"
+> & {
   definition: string;
   usage: string;
   subtitles: string;
+  updated_at: string;
 };
 
 type FieldError = { error: string };
 
 const COLUMNS =
-  "id, input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, subtitles, phonetic";
+  "id, input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, subtitles, phonetic, created_at, updated_at";
 
 const PUBLIC_COLUMNS =
-  "input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, subtitles, phonetic";
+  "input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, subtitles, phonetic, created_at, updated_at";
 
 const entries = new Hono<{ Bindings: CloudflareBindings }>();
 
@@ -152,8 +158,8 @@ entries.get("/lookup", async (c) => {
 
     if (!row) {
       await c.env.DB.prepare(
-        `INSERT INTO entries (input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO entries (input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
         .bind(
           inputText,
@@ -166,6 +172,7 @@ entries.get("/lookup", async (c) => {
           "pending",
           "[]",
           userId,
+          unixSeconds(),
         )
         .run();
       return c.json({ error: "entry not found" }, 404);
@@ -203,8 +210,8 @@ entries.post("/", async (c) => {
 
   try {
     const row = await c.env.DB.prepare(
-      `INSERT INTO entries (input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, subtitles, phonetic)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO entries (input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, subtitles, phonetic, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING ${COLUMNS}`,
     )
       .bind(
@@ -220,6 +227,8 @@ entries.post("/", async (c) => {
         input.user_id,
         JSON.stringify(input.subtitles),
         input.phonetic,
+        unixSeconds(),
+        "[]",
       )
       .first<StoredEntry>();
 
@@ -243,7 +252,7 @@ entries.put("/:id", async (c) => {
   try {
     const row = await c.env.DB.prepare(
       `UPDATE entries
-       SET input_text = ?, definition = ?, media_id = ?, sentence_id = ?, start_index = ?, end_index = ?, part_of_speech = ?, status = ?, usage = ?, user_id = ?, subtitles = ?, phonetic = ?
+       SET input_text = ?, definition = ?, media_id = ?, sentence_id = ?, start_index = ?, end_index = ?, part_of_speech = ?, status = ?, usage = ?, user_id = ?, subtitles = ?, phonetic = ?, updated_at = json_insert(updated_at, '$[#]', ?)
        WHERE id = ?
        RETURNING ${COLUMNS}`,
     )
@@ -260,6 +269,7 @@ entries.put("/:id", async (c) => {
         input.user_id,
         JSON.stringify(input.subtitles),
         input.phonetic,
+        unixSeconds(),
         id,
       )
       .first<StoredEntry>();
@@ -606,13 +616,32 @@ async function readJson(c: {
   }
 }
 
+function unixSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
 function withStoredColumns(row: StoredEntry): Entry {
   return {
     ...row,
     definition: parseStoredDefinition(row.definition),
     usage: parseStoredUsage(row.usage),
     subtitles: parseStoredSubtitles(row.subtitles),
+    updated_at: parseStoredUpdatedAt(row.updated_at),
   };
+}
+
+function parseStoredUpdatedAt(value: string): number[] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (Array.isArray(parsed) && parsed.every(isUnixTime)) return parsed;
+  } catch {
+    // A bad stored value reads as no updates.
+  }
+  return [];
+}
+
+function isUnixTime(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
 function parseStoredSubtitles(value: string): SubtitleLine[] {
