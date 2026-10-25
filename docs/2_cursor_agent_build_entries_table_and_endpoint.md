@@ -1,5 +1,5 @@
 # Cloudflare plugin addition
-_Exported on 10/25/2026 at 23:11:41 GMT+7 from Cursor (3.27.12)_
+_Exported on 10/25/2026 at 23:19:43 GMT+7 from Cursor (3.27.12)_
 
 ---
 
@@ -1168,4 +1168,24 @@ I'll add the `subtitles` column and wire it through the Worker the same way `usa
 Each line needs `id`, `target`, `mine`, `ipa`, `start`, `end`, and `speaker`. `start` and `end` are seconds, so `1.25` is allowed, and `end` must be at least `start`. A missing `subtitles` field returns 400 with `subtitles must be an array`.
 
 Existing rows, and a lookup placeholder that does not send this field, receive `[]`.
+
+---
+
+**User**
+
+add a new column and call it `phonetic`
+
+---
+
+**Cursor**
+
+`phonetic` will be a text column, same kind of field as `part_of_speech`. I’ll add the migration and include it on create and update.
+
+`phonetic` is a text column on `entries`, locally and on the remote database. Create and update requests must send a non-empty string:
+
+```json
+"phonetic": "kæt"
+```
+
+A missing value returns 400 with `phonetic must be a string`. An empty string returns 400 with `phonetic must not be empty`. Rows that already exist, and lookup placeholders, keep `""` until a `PUT` sets the pronunciation.
 

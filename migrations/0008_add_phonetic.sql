@@ -1,0 +1,2 @@
+ALTER TABLE entries
+ADD COLUMN phonetic TEXT NOT NULL DEFAULT '';

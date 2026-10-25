@@ -45,6 +45,7 @@ type Entry = {
   usage: UsageExample[];
   user_id: string;
   subtitles: SubtitleLine[];
+  phonetic: string;
 };
 
 type EntryInput = Omit<Entry, "id">;
@@ -58,10 +59,10 @@ type StoredEntry = Omit<Entry, "definition" | "usage" | "subtitles"> & {
 type FieldError = { error: string };
 
 const COLUMNS =
-  "id, input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, subtitles";
+  "id, input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, subtitles, phonetic";
 
 const PUBLIC_COLUMNS =
-  "input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, subtitles";
+  "input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, subtitles, phonetic";
 
 const entries = new Hono<{ Bindings: CloudflareBindings }>();
 
@@ -186,8 +187,8 @@ entries.post("/", async (c) => {
 
   try {
     const row = await c.env.DB.prepare(
-      `INSERT INTO entries (input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, subtitles)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO entries (input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, subtitles, phonetic)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING ${COLUMNS}`,
     )
       .bind(
@@ -202,6 +203,7 @@ entries.post("/", async (c) => {
         JSON.stringify(input.usage),
         input.user_id,
         JSON.stringify(input.subtitles),
+        input.phonetic,
       )
       .first<StoredEntry>();
 
@@ -225,7 +227,7 @@ entries.put("/:id", async (c) => {
   try {
     const row = await c.env.DB.prepare(
       `UPDATE entries
-       SET input_text = ?, definition = ?, media_id = ?, sentence_id = ?, start_index = ?, end_index = ?, part_of_speech = ?, status = ?, usage = ?, user_id = ?, subtitles = ?
+       SET input_text = ?, definition = ?, media_id = ?, sentence_id = ?, start_index = ?, end_index = ?, part_of_speech = ?, status = ?, usage = ?, user_id = ?, subtitles = ?, phonetic = ?
        WHERE id = ?
        RETURNING ${COLUMNS}`,
     )
@@ -241,6 +243,7 @@ entries.put("/:id", async (c) => {
         JSON.stringify(input.usage),
         input.user_id,
         JSON.stringify(input.subtitles),
+        input.phonetic,
         id,
       )
       .first<StoredEntry>();
@@ -318,6 +321,8 @@ function parseEntry(value: unknown): EntryInput | FieldError {
   if (isFieldError(subtitles)) return subtitles;
   const userId = requiredUserId(body.user_id);
   if (isFieldError(userId)) return userId;
+  const phonetic = requiredText(body.phonetic, "phonetic", true);
+  if (isFieldError(phonetic)) return phonetic;
   return {
     input_text: inputText,
     definition,
@@ -330,6 +335,7 @@ function parseEntry(value: unknown): EntryInput | FieldError {
     usage,
     user_id: userId,
     subtitles,
+    phonetic,
   };
 }
 

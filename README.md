@@ -423,3 +423,62 @@ Here's an example:
   ]
 }
 ```
+
+## 14. [UPDATE] INSERT A NEW ENTRY/VOCAB (local dev) after adding a new column `phonetic`
+
+Here's an example:
+
+```json
+{
+  "input_text": "walt in",
+  "definition": {
+    "vietnamese": "nó đáng lắm",
+    "english": "enter the room without permission"
+  },
+  "media_id": "11",
+  "sentence_id": "1",
+  "start_index": 5,
+  "end_index": 20,
+  "part_of_speech": "phrase",
+  "status": "editorpicked",
+  "usage": [
+    {
+      "id": 0,
+      "image": { "url": "", "alt": "" },
+      "text": { "english": "", "vietnamese": "" },
+      "note": { "english": "", "vietnamese": "" }
+    }
+  ],
+  "user_id": "user_3JfBd7NGG2fv7pUKpN3vL2s2wBG",
+  "subtitles": [
+    {
+      "id": 1,
+      "target": "When someone is well-behaved,",
+      "mine": "Khi ai đó cư xử đúng mực,",
+      "ipa": "wɛn ˈsʌmwʌn ɪz ˌwɛl bɪˈheɪvd",
+      "start": 0.0,
+      "end": 0.0,
+      "speaker": "Narrator:"
+    },
+    {
+      "id": 2,
+      "target": "it means they act in a polite, proper, and acceptable way,",
+      "mine": "điều đó có nghĩa là họ cư xử một cách lịch sự, đúng đắn và phù hợp,",
+      "ipa": "ɪt minz ðeɪ ækt ɪn ə pəˈlaɪt ˈprɑpɚ ænd əkˈsɛptəbəl weɪ",
+      "start": 0.0,
+      "end": 0.0,
+      "speaker": "Narrator:"
+    },
+    {
+      "id": 3,
+      "target": "often following rules and showing good manners.",
+      "mine": "thường tuân thủ các quy tắc và thể hiện phép lịch sự.",
+      "ipa": "ˈɔfən ˈfɑloʊɪŋ rulz ænd ˈʃoʊɪŋ ɡʊd ˈmænɚz",
+      "start": 0.0,
+      "end": 0.0,
+      "speaker": "Narrator:"
+    }
+  ],
+  "phonetic": "waltz in"
+}
+```
