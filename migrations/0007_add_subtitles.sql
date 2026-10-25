@@ -1,0 +1,2 @@
+ALTER TABLE entries
+ADD COLUMN subtitles TEXT NOT NULL DEFAULT '[]';
