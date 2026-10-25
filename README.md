@@ -541,3 +541,27 @@ Here's an example:
   "phonetic": "waltz in"
 }
 ```
+
+## 16. DEPLOY THE WORKER
+
+Respond in command line:
+
+```bash
+developedbyluan@Trans-Mac-mini commonvocab % bun run deploy
+$ wrangler deploy --minify
+
+ ⛅️ wrangler 4.152.0
+────────────────────
+Total Upload: 32.79 KiB / gzip: 11.46 KiB
+Worker Startup Time: 2 ms
+Your Worker has access to the following bindings:
+Binding                                    Resource
+env.DB (commonvocab)                       D1 Database
+env.LOOKUP_LIMITER (10 requests/60s)       Rate Limit
+env.ENTRIES_LIMITER (30 requests/60s)      Rate Limit
+
+Uploaded commonvocab (3.52 sec)
+Deployed commonvocab triggers (0.75 sec)
+  https://commonvocab.developedbyluan.workers.dev
+Current Version ID: 6ab46528-bfab-4332-9ba2-6803d421588e
+```
