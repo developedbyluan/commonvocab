@@ -8,6 +8,8 @@ type Definition = {
 type LocalizedText = {
   english: string;
   vietnamese: string;
+  start: number;
+  end: number;
 };
 
 type UsageImage = {
@@ -472,7 +474,16 @@ function requiredLocalizedText(
   if (isFieldError(english)) return english;
   const vietnamese = requiredString(body.vietnamese, `${field}.vietnamese`);
   if (isFieldError(vietnamese)) return vietnamese;
-  return { english, vietnamese };
+  const start = requiredTime(body.start, `${field}.start`);
+  if (isFieldError(start)) return start;
+  const end = requiredTime(body.end, `${field}.end`);
+  if (isFieldError(end)) return end;
+  if (end < start) {
+    return {
+      error: `${field}.end must be greater than or equal to ${field}.start`,
+    };
+  }
+  return { english, vietnamese, start, end };
 }
 
 function requiredString(value: unknown, field: string): string | FieldError {
@@ -674,7 +685,16 @@ function isLocalizedText(value: unknown): value is LocalizedText {
     return false;
   }
   const body = value as Record<string, unknown>;
-  return typeof body.english === "string" && typeof body.vietnamese === "string";
+  return (
+    typeof body.english === "string" &&
+    typeof body.vietnamese === "string" &&
+    typeof body.start === "number" &&
+    Number.isFinite(body.start) &&
+    body.start >= 0 &&
+    typeof body.end === "number" &&
+    Number.isFinite(body.end) &&
+    body.end >= body.start
+  );
 }
 
 function parseStoredDefinition(value: string): Definition {

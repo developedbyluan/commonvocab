@@ -482,3 +482,62 @@ Here's an example:
   "phonetic": "waltz in"
 }
 ```
+
+## 15. [UPDATE] INSERT A NEW ENTRY/VOCAB (local dev) after modifying column `usage`
+
+Here's an example:
+
+```json
+{
+  "input_text": "walt in",
+  "definition": {
+    "vietnamese": "nó đáng lắm",
+    "english": "enter the room without permission"
+  },
+  "media_id": "111",
+  "sentence_id": "11",
+  "start_index": 50,
+  "end_index": 200,
+  "part_of_speech": "phrase",
+  "status": "editorpicked",
+  "usage": [
+    {
+      "id": 0,
+      "image": { "url": "", "alt": "" },
+      "text": { "english": "", "vietnamese": "", "start": 0, "end": 0 },
+      "note": { "english": "", "vietnamese": "", "start": 0, "end": 0 }
+    }
+  ],
+  "user_id": "user_3JfBd7NGG2fv7pUKpN3vL2s2wBG",
+  "subtitles": [
+    {
+      "id": 1,
+      "target": "When someone is well-behaved,",
+      "mine": "Khi ai đó cư xử đúng mực,",
+      "ipa": "wɛn ˈsʌmwʌn ɪz ˌwɛl bɪˈheɪvd",
+      "start": 0.0,
+      "end": 0.0,
+      "speaker": "Narrator:"
+    },
+    {
+      "id": 2,
+      "target": "it means they act in a polite, proper, and acceptable way,",
+      "mine": "điều đó có nghĩa là họ cư xử một cách lịch sự, đúng đắn và phù hợp,",
+      "ipa": "ɪt minz ðeɪ ækt ɪn ə pəˈlaɪt ˈprɑpɚ ænd əkˈsɛptəbəl weɪ",
+      "start": 0.0,
+      "end": 0.0,
+      "speaker": "Narrator:"
+    },
+    {
+      "id": 3,
+      "target": "often following rules and showing good manners.",
+      "mine": "thường tuân thủ các quy tắc và thể hiện phép lịch sự.",
+      "ipa": "ˈɔfən ˈfɑloʊɪŋ rulz ænd ˈʃoʊɪŋ ɡʊd ˈmænɚz",
+      "start": 0.0,
+      "end": 0.0,
+      "speaker": "Narrator:"
+    }
+  ],
+  "phonetic": "waltz in"
+}
+```
