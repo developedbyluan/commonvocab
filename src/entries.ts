@@ -74,13 +74,19 @@ const COLUMNS =
 const PUBLIC_COLUMNS =
   "input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, subtitles, phonetic, created_at, updated_at, allowed_roles";
 
-const entries = new Hono<{ Bindings: CloudflareBindings }>();
+type Bindings = CloudflareBindings & {
+  OPENAI_API_KEY: string;
+  BASIC_AUTH_USERNAME: string;
+  BASIC_AUTH_PASSWORD: string;
+};
+
+const entries = new Hono<{ Bindings: Bindings }>();
 
 entries.use("*", async (c, next) => {
   const ip = c.req.header("cf-connecting-ip") ?? "unknown";
   if (c.req.path.endsWith("/lookup")) {
     const lookup = await c.env.LOOKUP_LIMITER.limit({
-      key: lookupRateLimitKey(c.req.query("user_id"), ip),
+      key: lookupRateLimitKey(await lookupRequestUserId(c), ip),
     });
     if (!lookup.success) return c.json({ error: "too many requests" }, 429);
   }
@@ -185,6 +191,90 @@ entries.get("/lookup", async (c) => {
     if (!sameText) return c.json({ error: "input text does not match" }, 400);
     if (row.status === "pending") return c.json({ error: "entry not found" }, 404);
     return c.json(withStoredColumns(row));
+  } catch (error) {
+    return databaseError(c, error);
+  }
+});
+
+entries.post("/lookup", async (c) => {
+  const allowed = basicAuthMatches(
+    c.req.header("authorization"),
+    c.env.BASIC_AUTH_USERNAME,
+    c.env.BASIC_AUTH_PASSWORD,
+  );
+  if (!allowed) {
+    c.header("WWW-Authenticate", 'Basic realm="entries"');
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const body = await readJson(c);
+  if (body instanceof Response) return body;
+  const input = parseLookup(body);
+  if ("error" in input) return c.json(input, 400);
+
+  try {
+    const row = await c.env.DB.prepare(
+      `SELECT id, ${PUBLIC_COLUMNS}
+       FROM entries
+       WHERE media_id = ? AND sentence_id = ? AND start_index = ? AND end_index = ?
+       ORDER BY id DESC
+       LIMIT 1`,
+    )
+      .bind(input.media_id, input.sentence_id, input.start_index, input.end_index)
+      .first<StoredEntry>();
+
+    if (row) {
+      const sameText =
+        row.input_text.trim().toLowerCase() === input.input_text.toLowerCase();
+      if (!sameText) return c.json({ error: "input text does not match" }, 400);
+      if (row.status !== "pending") return c.json(publicEntry(row));
+    }
+
+    const generated = await generateLookupFields(c.env.OPENAI_API_KEY, input);
+    if (!generated) return c.json({ error: "generation failed" }, 502);
+
+    if (!row) {
+      const created = await c.env.DB.prepare(
+        `INSERT INTO entries (input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, phonetic, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         RETURNING ${PUBLIC_COLUMNS}`,
+      )
+        .bind(
+          input.input_text,
+          JSON.stringify(generated.definition),
+          input.media_id,
+          input.sentence_id,
+          input.start_index,
+          input.end_index,
+          generated.part_of_speech,
+          "editorpicked",
+          "[]",
+          input.user_id,
+          generated.phonetic,
+          unixSeconds(),
+        )
+        .first<StoredEntry>();
+      if (!created) return c.json({ error: "database query failed" }, 500);
+      return c.json(publicEntry(created));
+    }
+
+    const updated = await c.env.DB.prepare(
+      `UPDATE entries
+       SET definition = ?, part_of_speech = ?, phonetic = ?, status = ?, updated_at = json_insert(updated_at, '$[#]', ?)
+       WHERE id = ?
+       RETURNING ${PUBLIC_COLUMNS}`,
+    )
+      .bind(
+        JSON.stringify(generated.definition),
+        generated.part_of_speech,
+        generated.phonetic,
+        "editorpicked",
+        unixSeconds(),
+        row.id,
+      )
+      .first<StoredEntry>();
+    if (!updated) return c.json({ error: "database query failed" }, 500);
+    return c.json(publicEntry(updated));
   } catch (error) {
     return databaseError(c, error);
   }
@@ -438,10 +528,60 @@ function requiredTime(value: unknown, field: string): number | FieldError {
   return value;
 }
 
+async function lookupRequestUserId(c: {
+  req: {
+    method: string;
+    query: (name: string) => string | undefined;
+    json: () => Promise<unknown>;
+  };
+}): Promise<string | undefined> {
+  const fromQuery = c.req.query("user_id");
+  if (fromQuery !== undefined) return fromQuery;
+  if (c.req.method !== "POST") return undefined;
+  try {
+    const body: unknown = await c.req.json();
+    if (body === null || typeof body !== "object" || Array.isArray(body)) {
+      return undefined;
+    }
+    const userId = (body as Record<string, unknown>).user_id;
+    return typeof userId === "string" ? userId : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function lookupRateLimitKey(userId: string | undefined, ip: string): string {
   const key = userId?.trim() ?? "";
   if (key.startsWith("user_") && key.length <= 64) return key;
   return ip;
+}
+
+function basicAuthMatches(
+  header: string | undefined,
+  username: string | undefined,
+  password: string | undefined,
+): boolean {
+  if (!username || !password) return false;
+  if (!header?.startsWith("Basic ")) return false;
+  let decoded: string;
+  try {
+    decoded = atob(header.slice("Basic ".length).trim());
+  } catch {
+    return false;
+  }
+  const separator = decoded.indexOf(":");
+  if (separator < 0) return false;
+  const user = decoded.slice(0, separator);
+  const pass = decoded.slice(separator + 1);
+  return safeEqual(user, username) && safeEqual(pass, password);
+}
+
+function safeEqual(left: string, right: string): boolean {
+  const encoder = new TextEncoder();
+  const a = encoder.encode(left);
+  const b = encoder.encode(right);
+  if (a.byteLength !== b.byteLength) return false;
+  return crypto.subtle.timingSafeEqual(a, b);
 }
 
 function requiredQueryUserId(value: string | undefined): string | FieldError {
@@ -659,6 +799,159 @@ function withStoredColumns(row: StoredEntry): Entry {
     updated_at: parseStoredUpdatedAt(row.updated_at),
     allowed_roles: parseStoredAllowedRoles(row.allowed_roles),
   };
+}
+
+function publicEntry(row: StoredEntry): Omit<Entry, "id"> {
+  const { id: _id, ...entry } = withStoredColumns(row);
+  return entry;
+}
+
+type LookupInput = {
+  input_text: string;
+  media_id: string;
+  sentence_id: string;
+  start_index: number;
+  end_index: number;
+  user_id: string;
+  previous: string;
+  current: string;
+  next: string;
+};
+
+function parseLookup(value: unknown): LookupInput | FieldError {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { error: "expected a JSON object" };
+  }
+  const body = value as Record<string, unknown>;
+  const inputText = requiredText(body.input_text, "input_text", true);
+  if (isFieldError(inputText)) return inputText;
+  const mediaId = requiredText(body.media_id, "media_id", true);
+  if (isFieldError(mediaId)) return mediaId;
+  const sentenceId = requiredText(body.sentence_id, "sentence_id", true);
+  if (isFieldError(sentenceId)) return sentenceId;
+  const startIndex = requiredIndex(body.start_index, "start_index");
+  if (isFieldError(startIndex)) return startIndex;
+  const endIndex = requiredIndex(body.end_index, "end_index");
+  if (isFieldError(endIndex)) return endIndex;
+  if (endIndex < startIndex) {
+    return { error: "end_index must be greater than or equal to start_index" };
+  }
+  const userId = requiredUserId(body.user_id);
+  if (isFieldError(userId)) return userId;
+  const previous = requiredString(body.previous, "previous");
+  if (isFieldError(previous)) return previous;
+  const current = requiredText(body.current, "current", true);
+  if (isFieldError(current)) return current;
+  if (!current.toLowerCase().includes(inputText.toLowerCase())) {
+    return { error: "current must contain input_text" };
+  }
+  const next = requiredString(body.next, "next");
+  if (isFieldError(next)) return next;
+  return {
+    input_text: inputText,
+    media_id: mediaId,
+    sentence_id: sentenceId,
+    start_index: startIndex,
+    end_index: endIndex,
+    user_id: userId,
+    previous,
+    current,
+    next,
+  };
+}
+
+type GeneratedLookup = {
+  definition: Definition;
+  part_of_speech: string;
+  phonetic: string;
+};
+
+async function generateLookupFields(
+  apiKey: string | undefined,
+  input: LookupInput,
+): Promise<GeneratedLookup | null> {
+  if (typeof apiKey !== "string" || apiKey.trim() === "") return null;
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4.1-mini",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You fill a vocabulary entry for one English word or phrase. Define it as it is used in the current line. Use the previous and next lines only as context. Return a short English definition, its Vietnamese definition, the part of speech, and an IPA phonetic spelling.",
+          },
+          {
+            role: "user",
+            content: [
+              `Word: ${input.input_text}`,
+              `Previous: ${input.previous}`,
+              `Current: ${input.current}`,
+              `Next: ${input.next}`,
+            ].join("\n"),
+          },
+        ],
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "lookup_fields",
+            strict: true,
+            schema: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                definition: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    english: { type: "string" },
+                    vietnamese: { type: "string" },
+                  },
+                  required: ["english", "vietnamese"],
+                },
+                part_of_speech: { type: "string" },
+                phonetic: { type: "string" },
+              },
+              required: ["definition", "part_of_speech", "phonetic"],
+            },
+          },
+        },
+      }),
+    });
+    if (!response.ok) return null;
+    const content = completionContent(await response.json());
+    if (!content) return null;
+    return parseGeneratedLookup(JSON.parse(content));
+  } catch {
+    return null;
+  }
+}
+
+function completionContent(value: unknown): string | null {
+  if (value === null || typeof value !== "object") return null;
+  const choices = (value as { choices?: unknown }).choices;
+  if (!Array.isArray(choices) || choices.length === 0) return null;
+  const message = (choices[0] as { message?: { content?: unknown } }).message;
+  return typeof message?.content === "string" ? message.content : null;
+}
+
+function parseGeneratedLookup(value: unknown): GeneratedLookup | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const body = value as Record<string, unknown>;
+  const definition = requiredDefinition(body.definition);
+  if (isFieldError(definition)) return null;
+  const partOfSpeech = requiredText(body.part_of_speech, "part_of_speech", true);
+  if (isFieldError(partOfSpeech)) return null;
+  const phonetic = requiredText(body.phonetic, "phonetic", true);
+  if (isFieldError(phonetic)) return null;
+  return { definition, part_of_speech: partOfSpeech, phonetic };
 }
 
 function parseStoredAllowedRoles(value: string): AllowedRole[] {
