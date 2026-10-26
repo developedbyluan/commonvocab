@@ -608,3 +608,24 @@ Deployed commonvocab triggers (0.95 sec)
   https://commonvocab.developedbyluan.workers.dev
 Current Version ID: 36d9d5e6-d359-4b51-b175-f09093c8cff4
 ```
+## 19. SEND A POST REQUEST to `/entries/lookup (local dev) with BASIC AUTH
+1. In Insomnia, create a request and set the method to POST.
+2. Set the URL to http://localhost:8787/entries/lookup.
+3. Open Body, choose JSON, and paste:
+
+```json
+{
+  "input_text": "Treat or trick!",
+  "media_id": "186",
+  "sentence_id": "10",
+  "start_index": 10,
+  "end_index": 28,
+  "user_id": "user_demo"
+}
+```
+
+4. Open the request’s Auth tab, choose Basic, and use:
+
+* Username: ****
+* Password: 9cIaou4laZZcB6-hvcl7CdFa
+(look at the `.env` file to see the real confidential)
