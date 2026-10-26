@@ -230,10 +230,7 @@ entries.post("/lookup", async (c) => {
       if (row.status !== "pending") return c.json(publicEntry(row));
     }
 
-    const generated = await generateLookupFields(
-      c.env.OPENAI_API_KEY,
-      input.input_text,
-    );
+    const generated = await generateLookupFields(c.env.OPENAI_API_KEY, input);
     if (!generated) return c.json({ error: "generation failed" }, 502);
 
     if (!row) {
@@ -816,6 +813,9 @@ type LookupInput = {
   start_index: number;
   end_index: number;
   user_id: string;
+  previous: string;
+  current: string;
+  next: string;
 };
 
 function parseLookup(value: unknown): LookupInput | FieldError {
@@ -838,6 +838,15 @@ function parseLookup(value: unknown): LookupInput | FieldError {
   }
   const userId = requiredUserId(body.user_id);
   if (isFieldError(userId)) return userId;
+  const previous = requiredString(body.previous, "previous");
+  if (isFieldError(previous)) return previous;
+  const current = requiredText(body.current, "current", true);
+  if (isFieldError(current)) return current;
+  if (!current.toLowerCase().includes(inputText.toLowerCase())) {
+    return { error: "current must contain input_text" };
+  }
+  const next = requiredString(body.next, "next");
+  if (isFieldError(next)) return next;
   return {
     input_text: inputText,
     media_id: mediaId,
@@ -845,6 +854,9 @@ function parseLookup(value: unknown): LookupInput | FieldError {
     start_index: startIndex,
     end_index: endIndex,
     user_id: userId,
+    previous,
+    current,
+    next,
   };
 }
 
@@ -856,7 +868,7 @@ type GeneratedLookup = {
 
 async function generateLookupFields(
   apiKey: string | undefined,
-  inputText: string,
+  input: LookupInput,
 ): Promise<GeneratedLookup | null> {
   if (typeof apiKey !== "string" || apiKey.trim() === "") return null;
   try {
@@ -872,9 +884,17 @@ async function generateLookupFields(
           {
             role: "system",
             content:
-              "You fill a vocabulary entry for one English word or phrase. Return a short English definition, its Vietnamese definition, the part of speech, and an IPA phonetic spelling.",
+              "You fill a vocabulary entry for one English word or phrase. Define it as it is used in the current line. Use the previous and next lines only as context. Return a short English definition, its Vietnamese definition, the part of speech, and an IPA phonetic spelling.",
           },
-          { role: "user", content: inputText },
+          {
+            role: "user",
+            content: [
+              `Word: ${input.input_text}`,
+              `Previous: ${input.previous}`,
+              `Current: ${input.current}`,
+              `Next: ${input.next}`,
+            ].join("\n"),
+          },
         ],
         response_format: {
           type: "json_schema",
