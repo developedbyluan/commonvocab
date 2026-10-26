@@ -565,3 +565,17 @@ Deployed commonvocab triggers (0.75 sec)
   https://commonvocab.developedbyluan.workers.dev
 Current Version ID: 6ab46528-bfab-4332-9ba2-6803d421588e
 ```
+
+## 17. SEND A POST REQUEST to `/entries/lookup (local dev)
+1. In Insomnia, create a request and set the method to POST.
+2. Set the URL to http://localhost:8787/entries/lookup.
+3. Open Body, choose JSON, and paste:
+
+{
+  "input_text": "harbor",
+  "media_id": "media-1",
+  "sentence_id": "1",
+  "start_index": 0,
+  "end_index": 6,
+  "user_id": "user_demo"
+}

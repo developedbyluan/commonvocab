@@ -1,5 +1,5 @@
 # Cloudflare plugin addition
-_Exported on 10/26/2026 at 12:08:13 GMT+7 from Cursor (3.27.14)_
+_Exported on 10/26/2026 at 12:12:52 GMT+7 from Cursor (3.27.14)_
 
 ---
 
@@ -1471,4 +1471,47 @@ output_path: /Users/developedbyluan/.cursor/projects/Users-developedbyluan-Deskt
 **Cursor**
 
 The temporary local server used to check `POST /entries/lookup` has stopped, so port 8787 is free again. Start your own server with `bun run dev` before sending a request from Insomnia.
+
+---
+
+**User**
+
+teach me how to send a POST request to /entries/lookup using insomnia
+
+---
+
+**Cursor**
+
+The POST lookup body is a small JSON object. I’ll check the exact fields the route expects so the Insomnia request matches it.
+
+Start the local server with `bun run dev`, then send the lookup fields as JSON in the body. This route does not use query parameters.
+
+1. In Insomnia, create a request and set the method to **POST**.
+2. Set the URL to `http://localhost:8787/entries/lookup`.
+3. Open **Body**, choose **JSON**, and paste:
+
+```json
+{
+  "input_text": "harbor",
+  "media_id": "media-1",
+  "sentence_id": "1",
+  "start_index": 0,
+  "end_index": 6,
+  "user_id": "user_demo"
+}
+```
+
+4. Send the request.
+
+`start_index` and `end_index` are numbers, not strings. `user_id` must start with `user_`. `end_index` must be greater than or equal to `start_index`.
+
+The first time that span is missing, the response takes a couple of seconds because OpenAI fills `definition`, `part_of_speech`, and `phonetic`. A success is **200**. The body is the entry without `id`, and `status` is `editorpicked`. `usage` and `subtitles` are `[]`, and `allowed_roles` is `["standard"]`.
+
+Sending the same body again returns that saved entry and does not call OpenAI. If you keep the same span but change `input_text` to a different word, the response is **400**:
+
+```json
+{ "error": "input text does not match" }
+```
+
+One `user_id` can call this route 10 times per minute. Request 11 returns **429** with `{ "error": "too many requests" }`.
 
