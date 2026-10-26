@@ -669,3 +669,18 @@ Deployed commonvocab triggers (0.67 sec)
   https://commonvocab.developedbyluan.workers.dev
 Current Version ID: f802b1fd-e6aa-4bf0-89da-835e48edac8d
 ```
+
+## 21. SEND A POST REQUEST to `/entries/lookup (local dev) required context fileds
+```json
+{
+  "input_text": "bat",
+  "media_id": "888",
+  "sentence_id": "1",
+  "start_index": 14,
+  "end_index": 17,
+  "user_id": "user_demo",
+	"previous": "The bases were loaded.",
+	"current": "He swung the bat and hit a home run.",
+	"next": "The crowd cheered."
+}
+```
