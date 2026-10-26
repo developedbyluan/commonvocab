@@ -74,7 +74,11 @@ const COLUMNS =
 const PUBLIC_COLUMNS =
   "input_text, definition, media_id, sentence_id, start_index, end_index, part_of_speech, status, usage, user_id, subtitles, phonetic, created_at, updated_at, allowed_roles";
 
-type Bindings = CloudflareBindings & { OPENAI_API_KEY: string };
+type Bindings = CloudflareBindings & {
+  OPENAI_API_KEY: string;
+  BASIC_AUTH_USERNAME: string;
+  BASIC_AUTH_PASSWORD: string;
+};
 
 const entries = new Hono<{ Bindings: Bindings }>();
 
@@ -193,6 +197,16 @@ entries.get("/lookup", async (c) => {
 });
 
 entries.post("/lookup", async (c) => {
+  const allowed = basicAuthMatches(
+    c.req.header("authorization"),
+    c.env.BASIC_AUTH_USERNAME,
+    c.env.BASIC_AUTH_PASSWORD,
+  );
+  if (!allowed) {
+    c.header("WWW-Authenticate", 'Basic realm="entries"');
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
   const body = await readJson(c);
   if (body instanceof Response) return body;
   const input = parseLookup(body);
@@ -543,6 +557,34 @@ function lookupRateLimitKey(userId: string | undefined, ip: string): string {
   const key = userId?.trim() ?? "";
   if (key.startsWith("user_") && key.length <= 64) return key;
   return ip;
+}
+
+function basicAuthMatches(
+  header: string | undefined,
+  username: string | undefined,
+  password: string | undefined,
+): boolean {
+  if (!username || !password) return false;
+  if (!header?.startsWith("Basic ")) return false;
+  let decoded: string;
+  try {
+    decoded = atob(header.slice("Basic ".length).trim());
+  } catch {
+    return false;
+  }
+  const separator = decoded.indexOf(":");
+  if (separator < 0) return false;
+  const user = decoded.slice(0, separator);
+  const pass = decoded.slice(separator + 1);
+  return safeEqual(user, username) && safeEqual(pass, password);
+}
+
+function safeEqual(left: string, right: string): boolean {
+  const encoder = new TextEncoder();
+  const a = encoder.encode(left);
+  const b = encoder.encode(right);
+  if (a.byteLength !== b.byteLength) return false;
+  return crypto.subtle.timingSafeEqual(a, b);
 }
 
 function requiredQueryUserId(value: string | undefined): string | FieldError {
