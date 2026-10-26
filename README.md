@@ -567,20 +567,22 @@ Current Version ID: 6ab46528-bfab-4332-9ba2-6803d421588e
 ```
 
 ## 17. SEND A POST REQUEST to `/entries/lookup (local dev)
+
 1. In Insomnia, create a request and set the method to POST.
 2. Set the URL to http://localhost:8787/entries/lookup.
 3. Open Body, choose JSON, and paste:
 
 {
-  "input_text": "harbor",
-  "media_id": "media-1",
-  "sentence_id": "1",
-  "start_index": 0,
-  "end_index": 6,
-  "user_id": "user_demo"
+"input_text": "harbor",
+"media_id": "media-1",
+"sentence_id": "1",
+"start_index": 0,
+"end_index": 6,
+"user_id": "user_demo"
 }
 
 ## 18. DEPLOY THE WORKER with AI FEATURE
+
 ```bash
 developedbyluan@Trans-Mac-mini commonvocab % npx wrangler secret put OPENAI_API_KEY
 
@@ -589,7 +591,7 @@ developedbyluan@Trans-Mac-mini commonvocab % npx wrangler secret put OPENAI_API_
 ✔ Enter a secret value: … ********************************************************************************************************************************************************************
 🌀 Creating the secret for the Worker "commonvocab"
 ✨ Success! Uploaded secret OPENAI_API_KEY
-developedbyluan@Trans-Mac-mini commonvocab % 
+developedbyluan@Trans-Mac-mini commonvocab %
 developedbyluan@Trans-Mac-mini commonvocab % bun run deploy
 $ wrangler deploy --minify
 
@@ -598,17 +600,19 @@ $ wrangler deploy --minify
 Total Upload: 36.74 KiB / gzip: 12.36 KiB
 Worker Startup Time: 2 ms
 Your Worker has access to the following bindings:
-Binding                                    Resource         
-env.DB (commonvocab)                       D1 Database      
-env.LOOKUP_LIMITER (10 requests/60s)       Rate Limit       
-env.ENTRIES_LIMITER (30 requests/60s)      Rate Limit       
+Binding                                    Resource
+env.DB (commonvocab)                       D1 Database
+env.LOOKUP_LIMITER (10 requests/60s)       Rate Limit
+env.ENTRIES_LIMITER (30 requests/60s)      Rate Limit
 
 Uploaded commonvocab (3.57 sec)
 Deployed commonvocab triggers (0.95 sec)
   https://commonvocab.developedbyluan.workers.dev
 Current Version ID: 36d9d5e6-d359-4b51-b175-f09093c8cff4
 ```
+
 ## 19. SEND A POST REQUEST to `/entries/lookup (local dev) with BASIC AUTH
+
 1. In Insomnia, create a request and set the method to POST.
 2. Set the URL to http://localhost:8787/entries/lookup.
 3. Open Body, choose JSON, and paste:
@@ -626,6 +630,42 @@ Current Version ID: 36d9d5e6-d359-4b51-b175-f09093c8cff4
 
 4. Open the request’s Auth tab, choose Basic, and use:
 
-* Username: ****
-* Password: 9cIaou4laZZcB6-hvcl7CdFa
-(look at the `.env` file to see the real confidential)
+- Username: \*\*\*\*
+- Password: 9cIaou4laZZcB6-hvcl7CdFa
+  (look at the `.env` file to see the real confidential)
+
+## 20. DEPLOY THE WORKER WITH BASIC AUTH FEATURE
+
+```bash
+developedbyluan@Trans-Mac-mini commonvocab % npx wrangler secret put BASIC_AUTH_USERNAME
+ ⛅️ wrangler 4.152.0
+────────────────────
+✔ Enter a secret value: … ******
+🌀 Creating the secret for the Worker "commonvocab"
+✨ Success! Uploaded secret BASIC_AUTH_USERNAME
+developedbyluan@Trans-Mac-mini commonvocab % npx wrangler secret put BASIC_AUTH_PASSWORD
+
+ ⛅️ wrangler 4.152.0
+────────────────────
+✔ Enter a secret value: … ************************
+🌀 Creating the secret for the Worker "commonvocab"
+✨ Success! Uploaded secret BASIC_AUTH_PASSWORD
+
+developedbyluan@Trans-Mac-mini commonvocab % bun run deploy
+$ wrangler deploy --minify
+
+ ⛅️ wrangler 4.152.0
+────────────────────
+Total Upload: 37.30 KiB / gzip: 12.63 KiB
+Worker Startup Time: 2 ms
+Your Worker has access to the following bindings:
+Binding                                    Resource
+env.DB (commonvocab)                       D1 Database
+env.LOOKUP_LIMITER (10 requests/60s)       Rate Limit
+env.ENTRIES_LIMITER (30 requests/60s)      Rate Limit
+
+Uploaded commonvocab (2.97 sec)
+Deployed commonvocab triggers (0.67 sec)
+  https://commonvocab.developedbyluan.workers.dev
+Current Version ID: f802b1fd-e6aa-4bf0-89da-835e48edac8d
+```
