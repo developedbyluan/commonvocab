@@ -684,3 +684,49 @@ Current Version ID: f802b1fd-e6aa-4bf0-89da-835e48edac8d
 	"next": "The crowd cheered."
 }
 ```
+
+## 22. CHAT API
+
+Chat tables live in the same `commonvocab` D1 database. Every `/users`, `/messages`, and `/replies` route uses the same Basic auth username and password as `POST /entries/lookup`.
+
+The acting person is `user_id` in the JSON body, or the `user_id` query parameter on DELETE and on reads. That id must start with `user_`. Edit and delete succeed for the author, or for the user whose id matches `CHAT_OWNER_USER_ID`.
+
+`GET /messages`, `GET /messages/:id`, `GET /messages/:id/replies`, `GET /messages/:id/likes`, and `GET /replies/:id` require `?user_id=`. The user must already exist.
+
+`links` is an optional array on creating or editing a message. Each item has `id`, `text`, `url`, and `note`. Omitted on create stores `[]`. Omitted on edit leaves the current list. `url` must start with `http://` or `https://`. Replies do not have links.
+
+`tags` is an optional array of names on creating or editing a message. The chat owner creates the allowed names with `POST /tags` `{ user_id, name }`. `GET /tags?user_id=` lists them. `DELETE /tags/:id?user_id=` removes a name and detaches it from messages. Only the owner can create or delete a tag. A message can have at most 10 tags, and each name must already be in the catalog. Omit `tags` on create and the message has none. Omit `tags` on edit and the current tags stay. Sending `tags` replaces the list.
+
+Filter the list with `GET /messages?user_id=&tags=grammar,vocab`. A message matches when it has any of those tags. Omit `tags` and the list is not filtered by tag. `limit` defaults to 50, with a maximum of 100, and `offset` defaults to 0.
+
+`pinned` is an optional boolean and `pin_rank` is an optional integer of 1 or more. Only the chat owner can set them. `1` is more important than `2`. `GET /messages` stays newest first, so the client sorts pinned messages by `pin_rank`. Unpinning sets `pin_rank` to `null`. Omitting both fields on a PUT leaves the current pin.
+
+Change only the pin with `PATCH /messages/:id`. The body accepts `user_id` plus `pinned` and/or `pin_rank`. `body`, `secret`, `links`, and `tags` are rejected. The message text stays as stored.
+
+`secret` is an optional boolean on creating or editing a message or reply. Omitted on create means public. Omitted on edit leaves the current value. A secret message is visible to its author and the chat owner. A secret reply is visible to its author, the parent message’s author, and the chat owner. Other callers do not see it in lists, and a direct fetch returns 404. Only someone who can see a message can reply to it or like it.
+
+Remove one like with `DELETE /messages/:id/likes/:userId?user_id=`. `:userId` is the person who liked the message. `user_id` is who is asking, and must be that person or the owner. The message must be one that person can see.
+
+Local development reads that id from `.dev.vars`:
+
+```
+CHAT_OWNER_USER_ID=user_owner
+```
+
+Create that user with `POST /users` before owner edits will succeed. Set the deployed value without writing it into `wrangler.jsonc`:
+
+```bash
+npx wrangler secret put CHAT_OWNER_USER_ID
+```
+
+Apply the chat migration locally before calling the routes:
+
+```bash
+npx wrangler d1 migrations apply commonvocab --local
+```
+
+The remote database is updated separately, after you confirm it:
+
+```bash
+npx wrangler d1 migrations apply commonvocab --remote
+```
