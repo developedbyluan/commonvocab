@@ -684,3 +684,33 @@ Current Version ID: f802b1fd-e6aa-4bf0-89da-835e48edac8d
 	"next": "The crowd cheered."
 }
 ```
+
+## 22. CHAT API
+
+Chat tables live in the same `commonvocab` D1 database. Every `/users`, `/messages`, and `/replies` route uses the same Basic auth username and password as `POST /entries/lookup`.
+
+The acting person is `user_id` in the JSON body, or the `user_id` query parameter on DELETE. That id must start with `user_`. Edit and delete succeed for the author, or for the user whose id matches `CHAT_OWNER_USER_ID`.
+
+Local development reads that id from `.dev.vars`:
+
+```
+CHAT_OWNER_USER_ID=user_owner
+```
+
+Create that user with `POST /users` before owner edits will succeed. Set the deployed value without writing it into `wrangler.jsonc`:
+
+```bash
+npx wrangler secret put CHAT_OWNER_USER_ID
+```
+
+Apply the chat migration locally before calling the routes:
+
+```bash
+npx wrangler d1 migrations apply commonvocab --local
+```
+
+The remote database is updated separately, after you confirm it:
+
+```bash
+npx wrangler d1 migrations apply commonvocab --remote
+```
