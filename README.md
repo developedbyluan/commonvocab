@@ -691,6 +691,8 @@ Chat tables live in the same `commonvocab` D1 database. Every `/users`, `/messag
 
 The acting person is `user_id` in the JSON body, or the `user_id` query parameter on DELETE. That id must start with `user_`. Edit and delete succeed for the author, or for the user whose id matches `CHAT_OWNER_USER_ID`.
 
+Remove one like with `DELETE /messages/:id/likes/:userId?user_id=`. `:userId` is the person who liked the message. `user_id` is who is asking, and must be that person or the owner.
+
 Local development reads that id from `.dev.vars`:
 
 ```

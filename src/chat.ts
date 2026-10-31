@@ -375,6 +375,39 @@ messages.get("/:id/likes", async (c) => {
   }
 });
 
+messages.delete("/:id/likes/:userId", async (c) => {
+  const messageId = parseId(c.req.param("id"));
+  if (messageId === null) {
+    return c.json({ error: "id must be a positive integer" }, 400);
+  }
+  const likerId = requiredUserId(c.req.param("userId"));
+  if (isFieldError(likerId)) return c.json(likerId, 400);
+  const actorId = requiredQueryUserId(c.req.query("user_id"));
+  if (isFieldError(actorId)) return c.json(actorId, 400);
+
+  try {
+    const actor = await findUser(c.env.DB, actorId);
+    if (!actor) return c.json({ error: "user not found" }, 400);
+    const message = await findMessage(c.env.DB, messageId);
+    if (!message) return c.json({ error: "message not found" }, 404);
+    const like = await findLike(c.env.DB, messageId, likerId);
+    if (!like) return c.json({ error: "like not found" }, 404);
+    if (!canMutate(actorId, like.user_id, c.env.CHAT_OWNER_USER_ID)) {
+      return c.json({ error: "forbidden" }, 403);
+    }
+
+    const deleted = await c.env.DB.prepare(
+      `DELETE FROM likes WHERE message_id = ? AND user_id = ?`,
+    )
+      .bind(messageId, likerId)
+      .run();
+    if (!deleted.meta.changes) return c.json({ error: "like not found" }, 404);
+    return c.json(like);
+  } catch (error) {
+    return databaseError(c, error);
+  }
+});
+
 messages.get("/:id", async (c) => {
   const id = parseId(c.req.param("id"));
   if (id === null) return c.json({ error: "id must be a positive integer" }, 400);
@@ -568,6 +601,22 @@ async function findReply(db: D1Database, id: number): Promise<ReplyRow | null> {
     .prepare(`${REPLY_SELECT} WHERE r.id = ?`)
     .bind(id)
     .first<ReplyRow>();
+}
+
+async function findLike(
+  db: D1Database,
+  messageId: number,
+  userId: string,
+): Promise<LikeRow | null> {
+  return db
+    .prepare(
+      `SELECT l.message_id, l.user_id, u.display_name, l.created_at
+       FROM likes l
+       JOIN users u ON u.id = l.user_id
+       WHERE l.message_id = ? AND l.user_id = ?`,
+    )
+    .bind(messageId, userId)
+    .first<LikeRow>();
 }
 
 function parseCreateUser(
