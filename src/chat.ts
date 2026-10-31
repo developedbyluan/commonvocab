@@ -507,6 +507,38 @@ messages.get("/:id", async (c) => {
   }
 });
 
+messages.patch("/:id", async (c) => {
+  const id = parseId(c.req.param("id"));
+  if (id === null) return c.json({ error: "id must be a positive integer" }, 400);
+  const body = await readJson(c);
+  if (body instanceof Response) return body;
+  const input = parsePinPatch(body);
+  if (isFieldError(input)) return c.json(input, 400);
+
+  try {
+    const actor = await findUser(c.env.DB, input.user_id);
+    if (!actor) return c.json({ error: "user not found" }, 400);
+    const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
+    const row = await findMessage(c.env.DB, id, input.user_id, owner);
+    if (!row || !canSeeMessage(input.user_id, row.user_id, row.secret, owner)) {
+      return c.json({ error: "message not found" }, 404);
+    }
+
+    const pin = decidePin(input, row, input.user_id, c.env.CHAT_OWNER_USER_ID);
+    if ("status" in pin) return c.json({ error: pin.error }, pin.status);
+    await c.env.DB.prepare(
+      `UPDATE messages SET pinned = ?, pin_rank = ?, updated_at = ? WHERE id = ?`,
+    )
+      .bind(pin.pinned, pin.pin_rank, Math.max(unixSeconds(), row.created_at), id)
+      .run();
+    const updated = await findMessage(c.env.DB, id, input.user_id, owner);
+    if (!updated) return c.json({ error: "message not found" }, 404);
+    return c.json(presentMessage(updated));
+  } catch (error) {
+    return databaseError(c, error);
+  }
+});
+
 messages.put("/:id", async (c) => {
   const id = parseId(c.req.param("id"));
   if (id === null) return c.json({ error: "id must be a positive integer" }, 400);
@@ -837,6 +869,26 @@ function parseActorName(
   const displayName = requiredLimitedText(body.display_name, "display_name", 80);
   if (isFieldError(displayName)) return displayName;
   return { user_id: actor.user_id, display_name: displayName };
+}
+
+function parsePinPatch(
+  value: unknown,
+): { user_id: string; pinned?: boolean; pin_rank?: number } | FieldError {
+  const body = jsonObject(value);
+  if (isFieldError(body)) return body;
+  if ("body" in body || "secret" in body || "links" in body) {
+    return { error: "body, secret, and links cannot be patched" };
+  }
+  const userId = requiredUserId(body.user_id);
+  if (isFieldError(userId)) return userId;
+  const pinned = optionalPinned(body.pinned);
+  if (isFieldError(pinned)) return pinned;
+  const pinRank = optionalPinRank(body.pin_rank);
+  if (isFieldError(pinRank)) return pinRank;
+  if (pinned === undefined && pinRank === undefined) {
+    return { error: "pinned or pin_rank is required" };
+  }
+  return { user_id: userId, pinned, pin_rank: pinRank };
 }
 
 function parseAuthorBody(
