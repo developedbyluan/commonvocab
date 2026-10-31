@@ -19,6 +19,7 @@ type MessageRow = {
   user_id: string;
   display_name: string;
   body: string;
+  secret: number;
   created_at: number;
   updated_at: number;
   reply_count: number;
@@ -31,8 +32,14 @@ type ReplyRow = {
   user_id: string;
   display_name: string;
   body: string;
+  secret: number;
   created_at: number;
   updated_at: number;
+};
+
+type ReplyAccess = ReplyRow & {
+  message_user_id: string;
+  message_secret: number;
 };
 
 type LikeRow = {
@@ -55,13 +62,16 @@ type ChatContext = {
   json: (body: unknown, status?: number) => Response;
 };
 
-const MESSAGE_SELECT = `SELECT m.id, m.user_id, u.display_name, m.body, m.created_at, m.updated_at,
-       (SELECT COUNT(*) FROM replies r WHERE r.message_id = m.id) AS reply_count,
+const MESSAGE_SELECT = `SELECT m.id, m.user_id, u.display_name, m.body, m.secret, m.created_at, m.updated_at,
+       (SELECT COUNT(*) FROM replies r
+        WHERE r.message_id = m.id
+          AND (r.secret = 0 OR r.user_id = ?1 OR m.user_id = ?1 OR ?1 = ?2)
+       ) AS reply_count,
        (SELECT COUNT(*) FROM likes l WHERE l.message_id = m.id) AS like_count
      FROM messages m
      JOIN users u ON u.id = m.user_id`;
 
-const REPLY_SELECT = `SELECT r.id, r.message_id, r.user_id, u.display_name, r.body, r.created_at, r.updated_at
+const REPLY_SELECT = `SELECT r.id, r.message_id, r.user_id, u.display_name, r.body, r.secret, r.created_at, r.updated_at
      FROM replies r
      JOIN users u ON u.id = r.user_id`;
 
@@ -227,32 +237,36 @@ messages.post("/", async (c) => {
     if (!author) return c.json({ error: "user not found" }, 400);
     const now = unixSeconds();
     const row = await c.env.DB.prepare(
-      `INSERT INTO messages (user_id, body, created_at, updated_at)
-       VALUES (?, ?, ?, ?)
-       RETURNING id, user_id, body, created_at, updated_at`,
+      `INSERT INTO messages (user_id, body, secret, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       RETURNING id, user_id, body, secret, created_at, updated_at`,
     )
-      .bind(input.user_id, input.body, now, now)
+      .bind(input.user_id, input.body, input.secret ? 1 : 0, now, now)
       .first<Omit<MessageRow, "display_name" | "reply_count" | "like_count">>();
     if (!row) return c.json({ error: "database query failed" }, 500);
-    return c.json(asMessage(row, author.display_name, 0, 0), 201);
+    return c.json(presentMessage(asMessage(row, author.display_name, 0, 0)), 201);
   } catch (error) {
     return databaseError(c, error);
   }
 });
 
 messages.get("/", async (c) => {
+  const viewer = await requireViewer(c);
+  if (viewer instanceof Response) return viewer;
   const bounds = page(c);
   if (isFieldError(bounds)) return c.json(bounds, 400);
 
   try {
+    const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
     const { results } = await c.env.DB.prepare(
       `${MESSAGE_SELECT}
+       WHERE m.secret = 0 OR m.user_id = ?1 OR ?1 = ?2
        ORDER BY m.id DESC
-       LIMIT ?1 OFFSET ?2`,
+       LIMIT ?3 OFFSET ?4`,
     )
-      .bind(bounds.limit, bounds.offset)
+      .bind(viewer.id, owner, bounds.limit, bounds.offset)
       .all<MessageRow>();
-    return c.json(results);
+    return c.json(results.map(presentMessage));
   } catch (error) {
     return databaseError(c, error);
   }
@@ -269,20 +283,26 @@ messages.post("/:id/replies", async (c) => {
   if (isFieldError(input)) return c.json(input, 400);
 
   try {
-    const message = await findMessage(c.env.DB, messageId);
-    if (!message) return c.json({ error: "message not found" }, 404);
     const author = await findUser(c.env.DB, input.user_id);
     if (!author) return c.json({ error: "user not found" }, 400);
+    const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
+    const message = await findMessage(c.env.DB, messageId, input.user_id, owner);
+    if (
+      !message ||
+      !canSeeMessage(input.user_id, message.user_id, message.secret, owner)
+    ) {
+      return c.json({ error: "message not found" }, 404);
+    }
     const now = unixSeconds();
     const row = await c.env.DB.prepare(
-      `INSERT INTO replies (message_id, user_id, body, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?)
-       RETURNING id, message_id, user_id, body, created_at, updated_at`,
+      `INSERT INTO replies (message_id, user_id, body, secret, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       RETURNING id, message_id, user_id, body, secret, created_at, updated_at`,
     )
-      .bind(messageId, input.user_id, input.body, now, now)
+      .bind(messageId, input.user_id, input.body, input.secret ? 1 : 0, now, now)
       .first<Omit<ReplyRow, "display_name">>();
     if (!row) return c.json({ error: "database query failed" }, 500);
-    return c.json({ ...row, display_name: author.display_name }, 201);
+    return c.json(presentReply({ ...row, display_name: author.display_name }), 201);
   } catch (error) {
     return databaseError(c, error);
   }
@@ -293,21 +313,30 @@ messages.get("/:id/replies", async (c) => {
   if (messageId === null) {
     return c.json({ error: "id must be a positive integer" }, 400);
   }
+  const viewer = await requireViewer(c);
+  if (viewer instanceof Response) return viewer;
   const bounds = page(c);
   if (isFieldError(bounds)) return c.json(bounds, 400);
 
   try {
-    const message = await findMessage(c.env.DB, messageId);
-    if (!message) return c.json({ error: "message not found" }, 404);
+    const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
+    const message = await findMessage(c.env.DB, messageId, viewer.id, owner);
+    if (
+      !message ||
+      !canSeeMessage(viewer.id, message.user_id, message.secret, owner)
+    ) {
+      return c.json({ error: "message not found" }, 404);
+    }
     const { results } = await c.env.DB.prepare(
       `${REPLY_SELECT}
        WHERE r.message_id = ?1
+         AND (r.secret = 0 OR r.user_id = ?2 OR ?3 = ?2 OR ?2 = ?4)
        ORDER BY r.id
-       LIMIT ?2 OFFSET ?3`,
+       LIMIT ?5 OFFSET ?6`,
     )
-      .bind(messageId, bounds.limit, bounds.offset)
+      .bind(messageId, viewer.id, message.user_id, owner, bounds.limit, bounds.offset)
       .all<ReplyRow>();
-    return c.json(results);
+    return c.json(results.map(presentReply));
   } catch (error) {
     return databaseError(c, error);
   }
@@ -324,10 +353,16 @@ messages.post("/:id/likes", async (c) => {
   if (isFieldError(input)) return c.json(input, 400);
 
   try {
-    const message = await findMessage(c.env.DB, messageId);
-    if (!message) return c.json({ error: "message not found" }, 404);
     const actor = await findUser(c.env.DB, input.user_id);
     if (!actor) return c.json({ error: "user not found" }, 400);
+    const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
+    const message = await findMessage(c.env.DB, messageId, input.user_id, owner);
+    if (
+      !message ||
+      !canSeeMessage(input.user_id, message.user_id, message.secret, owner)
+    ) {
+      return c.json({ error: "message not found" }, 404);
+    }
 
     const now = unixSeconds();
     await c.env.DB.prepare(
@@ -353,12 +388,20 @@ messages.get("/:id/likes", async (c) => {
   if (messageId === null) {
     return c.json({ error: "id must be a positive integer" }, 400);
   }
+  const viewer = await requireViewer(c);
+  if (viewer instanceof Response) return viewer;
   const bounds = page(c);
   if (isFieldError(bounds)) return c.json(bounds, 400);
 
   try {
-    const message = await findMessage(c.env.DB, messageId);
-    if (!message) return c.json({ error: "message not found" }, 404);
+    const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
+    const message = await findMessage(c.env.DB, messageId, viewer.id, owner);
+    if (
+      !message ||
+      !canSeeMessage(viewer.id, message.user_id, message.secret, owner)
+    ) {
+      return c.json({ error: "message not found" }, 404);
+    }
     const { results } = await c.env.DB.prepare(
       `SELECT l.message_id, l.user_id, u.display_name, l.created_at
        FROM likes l
@@ -388,8 +431,14 @@ messages.delete("/:id/likes/:userId", async (c) => {
   try {
     const actor = await findUser(c.env.DB, actorId);
     if (!actor) return c.json({ error: "user not found" }, 400);
-    const message = await findMessage(c.env.DB, messageId);
-    if (!message) return c.json({ error: "message not found" }, 404);
+    const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
+    const message = await findMessage(c.env.DB, messageId, actorId, owner);
+    if (
+      !message ||
+      !canSeeMessage(actorId, message.user_id, message.secret, owner)
+    ) {
+      return c.json({ error: "message not found" }, 404);
+    }
     const like = await findLike(c.env.DB, messageId, likerId);
     if (!like) return c.json({ error: "like not found" }, 404);
     if (!canMutate(actorId, like.user_id, c.env.CHAT_OWNER_USER_ID)) {
@@ -411,21 +460,27 @@ messages.delete("/:id/likes/:userId", async (c) => {
 messages.get("/:id", async (c) => {
   const id = parseId(c.req.param("id"));
   if (id === null) return c.json({ error: "id must be a positive integer" }, 400);
+  const viewer = await requireViewer(c);
+  if (viewer instanceof Response) return viewer;
   const bounds = page(c);
   if (isFieldError(bounds)) return c.json(bounds, 400);
 
   try {
-    const row = await findMessage(c.env.DB, id);
-    if (!row) return c.json({ error: "message not found" }, 404);
+    const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
+    const row = await findMessage(c.env.DB, id, viewer.id, owner);
+    if (!row || !canSeeMessage(viewer.id, row.user_id, row.secret, owner)) {
+      return c.json({ error: "message not found" }, 404);
+    }
     const { results } = await c.env.DB.prepare(
       `${REPLY_SELECT}
        WHERE r.message_id = ?1
+         AND (r.secret = 0 OR r.user_id = ?2 OR ?3 = ?2 OR ?2 = ?4)
        ORDER BY r.id
-       LIMIT ?2 OFFSET ?3`,
+       LIMIT ?5 OFFSET ?6`,
     )
-      .bind(id, bounds.limit, bounds.offset)
+      .bind(id, viewer.id, row.user_id, owner, bounds.limit, bounds.offset)
       .all<ReplyRow>();
-    return c.json({ ...row, replies: results });
+    return c.json({ ...presentMessage(row), replies: results.map(presentReply) });
   } catch (error) {
     return databaseError(c, error);
   }
@@ -442,20 +497,22 @@ messages.put("/:id", async (c) => {
   try {
     const actor = await findUser(c.env.DB, input.user_id);
     if (!actor) return c.json({ error: "user not found" }, 400);
-    const row = await findMessage(c.env.DB, id);
+    const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
+    const row = await findMessage(c.env.DB, id, input.user_id, owner);
     if (!row) return c.json({ error: "message not found" }, 404);
     if (!canMutate(input.user_id, row.user_id, c.env.CHAT_OWNER_USER_ID)) {
       return c.json({ error: "forbidden" }, 403);
     }
 
+    const secret = input.secret === undefined ? row.secret : input.secret ? 1 : 0;
     await c.env.DB.prepare(
-      `UPDATE messages SET body = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE messages SET body = ?, secret = ?, updated_at = ? WHERE id = ?`,
     )
-      .bind(input.body, Math.max(unixSeconds(), row.created_at), id)
+      .bind(input.body, secret, Math.max(unixSeconds(), row.created_at), id)
       .run();
-    const updated = await findMessage(c.env.DB, id);
+    const updated = await findMessage(c.env.DB, id, input.user_id, owner);
     if (!updated) return c.json({ error: "message not found" }, 404);
-    return c.json(updated);
+    return c.json(presentMessage(updated));
   } catch (error) {
     return databaseError(c, error);
   }
@@ -470,7 +527,8 @@ messages.delete("/:id", async (c) => {
   try {
     const actor = await findUser(c.env.DB, actorId);
     if (!actor) return c.json({ error: "user not found" }, 400);
-    const row = await findMessage(c.env.DB, id);
+    const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
+    const row = await findMessage(c.env.DB, id, actorId, owner);
     if (!row) return c.json({ error: "message not found" }, 404);
     if (!canMutate(actorId, row.user_id, c.env.CHAT_OWNER_USER_ID)) {
       return c.json({ error: "forbidden" }, 403);
@@ -480,7 +538,7 @@ messages.delete("/:id", async (c) => {
       .bind(id)
       .run();
     if (!deleted.meta.changes) return c.json({ error: "message not found" }, 404);
-    return c.json(row);
+    return c.json(presentMessage(row));
   } catch (error) {
     return databaseError(c, error);
   }
@@ -489,11 +547,25 @@ messages.delete("/:id", async (c) => {
 replies.get("/:id", async (c) => {
   const id = parseId(c.req.param("id"));
   if (id === null) return c.json({ error: "id must be a positive integer" }, 400);
+  const viewer = await requireViewer(c);
+  if (viewer instanceof Response) return viewer;
 
   try {
-    const row = await findReply(c.env.DB, id);
-    if (!row) return c.json({ error: "reply not found" }, 404);
-    return c.json(row);
+    const row = await findReplyAccess(c.env.DB, id);
+    if (
+      !row ||
+      !canSeeReply(
+        viewer.id,
+        row.user_id,
+        row.message_user_id,
+        row.secret,
+        row.message_secret,
+        chatOwner(c.env.CHAT_OWNER_USER_ID),
+      )
+    ) {
+      return c.json({ error: "reply not found" }, 404);
+    }
+    return c.json(presentReply(row));
   } catch (error) {
     return databaseError(c, error);
   }
@@ -516,16 +588,17 @@ replies.put("/:id", async (c) => {
       return c.json({ error: "forbidden" }, 403);
     }
 
+    const secret = input.secret === undefined ? row.secret : input.secret ? 1 : 0;
     const updated = await c.env.DB.prepare(
-      `UPDATE replies SET body = ?, updated_at = ? WHERE id = ?
+      `UPDATE replies SET body = ?, secret = ?, updated_at = ? WHERE id = ?
        RETURNING id`,
     )
-      .bind(input.body, Math.max(unixSeconds(), row.created_at), id)
+      .bind(input.body, secret, Math.max(unixSeconds(), row.created_at), id)
       .first<{ id: number }>();
     if (!updated) return c.json({ error: "reply not found" }, 404);
     const fresh = await findReply(c.env.DB, id);
     if (!fresh) return c.json({ error: "reply not found" }, 404);
-    return c.json(fresh);
+    return c.json(presentReply(fresh));
   } catch (error) {
     return databaseError(c, error);
   }
@@ -550,11 +623,68 @@ replies.delete("/:id", async (c) => {
       .bind(id)
       .run();
     if (!deleted.meta.changes) return c.json({ error: "reply not found" }, 404);
-    return c.json(row);
+    return c.json(presentReply(row));
   } catch (error) {
     return databaseError(c, error);
   }
 });
+
+function presentMessage(row: MessageRow) {
+  return { ...row, secret: row.secret === 1 };
+}
+
+function presentReply(row: ReplyRow) {
+  return {
+    id: row.id,
+    message_id: row.message_id,
+    user_id: row.user_id,
+    display_name: row.display_name,
+    body: row.body,
+    secret: row.secret === 1,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function chatOwner(ownerId: string | undefined): string {
+  return typeof ownerId === "string" ? ownerId : "";
+}
+
+function canSeeMessage(
+  viewer: string,
+  author: string,
+  secret: number,
+  owner: string,
+): boolean {
+  if (secret === 0) return true;
+  return viewer === author || (owner.length > 0 && viewer === owner);
+}
+
+function canSeeReply(
+  viewer: string,
+  replyAuthor: string,
+  messageAuthor: string,
+  replySecret: number,
+  messageSecret: number,
+  owner: string,
+): boolean {
+  if (replySecret === 1) {
+    return (
+      viewer === replyAuthor ||
+      viewer === messageAuthor ||
+      (owner.length > 0 && viewer === owner)
+    );
+  }
+  return canSeeMessage(viewer, messageAuthor, messageSecret, owner);
+}
+
+async function requireViewer(c: ChatContext): Promise<UserRow | Response> {
+  const viewerId = requiredQueryUserId(c.req.query("user_id"));
+  if (isFieldError(viewerId)) return c.json(viewerId, 400);
+  const viewer = await findUser(c.env.DB, viewerId);
+  if (!viewer) return c.json({ error: "user not found" }, 400);
+  return viewer;
+}
 
 function asMessage(
   row: Omit<MessageRow, "display_name" | "reply_count" | "like_count">,
@@ -589,10 +719,12 @@ async function findUser(db: D1Database, id: string): Promise<UserRow | null> {
 async function findMessage(
   db: D1Database,
   id: number,
+  viewer: string,
+  owner: string,
 ): Promise<MessageRow | null> {
   return db
-    .prepare(`${MESSAGE_SELECT} WHERE m.id = ?`)
-    .bind(id)
+    .prepare(`${MESSAGE_SELECT} WHERE m.id = ?3`)
+    .bind(viewer, owner, id)
     .first<MessageRow>();
 }
 
@@ -601,6 +733,23 @@ async function findReply(db: D1Database, id: number): Promise<ReplyRow | null> {
     .prepare(`${REPLY_SELECT} WHERE r.id = ?`)
     .bind(id)
     .first<ReplyRow>();
+}
+
+async function findReplyAccess(
+  db: D1Database,
+  id: number,
+): Promise<ReplyAccess | null> {
+  return db
+    .prepare(
+      `SELECT r.id, r.message_id, r.user_id, u.display_name, r.body, r.secret, r.created_at, r.updated_at,
+              m.user_id AS message_user_id, m.secret AS message_secret
+       FROM replies r
+       JOIN users u ON u.id = r.user_id
+       JOIN messages m ON m.id = r.message_id
+       WHERE r.id = ?`,
+    )
+    .bind(id)
+    .first<ReplyAccess>();
 }
 
 async function findLike(
@@ -653,14 +802,22 @@ function parseActorName(
 
 function parseAuthorBody(
   value: unknown,
-): { user_id: string; body: string } | FieldError {
+): { user_id: string; body: string; secret?: boolean } | FieldError {
   const actor = parseActor(value);
   if (isFieldError(actor)) return actor;
   const body = jsonObject(value);
   if (isFieldError(body)) return body;
   const text = requiredLimitedText(body.body, "body", 2000);
   if (isFieldError(text)) return text;
-  return { user_id: actor.user_id, body: text };
+  const secret = optionalSecret(body.secret);
+  if (isFieldError(secret)) return secret;
+  return { user_id: actor.user_id, body: text, secret };
+}
+
+function optionalSecret(value: unknown): boolean | undefined | FieldError {
+  if (value === undefined) return undefined;
+  if (typeof value !== "boolean") return { error: "secret must be a boolean" };
+  return value;
 }
 
 function jsonObject(value: unknown): Record<string, unknown> | FieldError {

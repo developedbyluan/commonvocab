@@ -689,9 +689,13 @@ Current Version ID: f802b1fd-e6aa-4bf0-89da-835e48edac8d
 
 Chat tables live in the same `commonvocab` D1 database. Every `/users`, `/messages`, and `/replies` route uses the same Basic auth username and password as `POST /entries/lookup`.
 
-The acting person is `user_id` in the JSON body, or the `user_id` query parameter on DELETE. That id must start with `user_`. Edit and delete succeed for the author, or for the user whose id matches `CHAT_OWNER_USER_ID`.
+The acting person is `user_id` in the JSON body, or the `user_id` query parameter on DELETE and on reads. That id must start with `user_`. Edit and delete succeed for the author, or for the user whose id matches `CHAT_OWNER_USER_ID`.
 
-Remove one like with `DELETE /messages/:id/likes/:userId?user_id=`. `:userId` is the person who liked the message. `user_id` is who is asking, and must be that person or the owner.
+`GET /messages`, `GET /messages/:id`, `GET /messages/:id/replies`, `GET /messages/:id/likes`, and `GET /replies/:id` require `?user_id=`. The user must already exist.
+
+`secret` is an optional boolean on creating or editing a message or reply. Omitted on create means public. Omitted on edit leaves the current value. A secret message is visible to its author and the chat owner. A secret reply is visible to its author, the parent message’s author, and the chat owner. Other callers do not see it in lists, and a direct fetch returns 404. Only someone who can see a message can reply to it or like it.
+
+Remove one like with `DELETE /messages/:id/likes/:userId?user_id=`. `:userId` is the person who liked the message. `user_id` is who is asking, and must be that person or the owner. The message must be one that person can see.
 
 Local development reads that id from `.dev.vars`:
 
