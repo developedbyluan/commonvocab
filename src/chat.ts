@@ -21,6 +21,11 @@ type MessageLink = {
   note: string;
 };
 
+type TagRow = {
+  id: number;
+  name: string;
+};
+
 type MessageRow = {
   id: number;
   user_id: string;
@@ -28,6 +33,7 @@ type MessageRow = {
   body: string;
   secret: number;
   links: string;
+  tags: string;
   pinned: number;
   pin_rank: number | null;
   created_at: number;
@@ -77,7 +83,18 @@ const MESSAGE_SELECT = `SELECT m.id, m.user_id, u.display_name, m.body, m.secret
         WHERE r.message_id = m.id
           AND (r.secret = 0 OR r.user_id = ?1 OR m.user_id = ?1 OR ?1 = ?2)
        ) AS reply_count,
-       (SELECT COUNT(*) FROM likes l WHERE l.message_id = m.id) AS like_count
+       (SELECT COUNT(*) FROM likes l WHERE l.message_id = m.id) AS like_count,
+       (SELECT COALESCE(
+          json_group_array(
+            json_object('id', tg.id, 'name', tg.name)
+            ORDER BY tg.name COLLATE NOCASE, tg.id
+          ),
+          '[]'
+        )
+        FROM message_tags mt
+        JOIN tags tg ON tg.id = mt.tag_id
+        WHERE mt.message_id = m.id
+       ) AS tags
      FROM messages m
      JOIN users u ON u.id = m.user_id`;
 
@@ -88,6 +105,7 @@ const REPLY_SELECT = `SELECT r.id, r.message_id, r.user_id, u.display_name, r.bo
 const users = new Hono<{ Bindings: Bindings }>();
 const messages = new Hono<{ Bindings: Bindings }>();
 const replies = new Hono<{ Bindings: Bindings }>();
+const tags = new Hono<{ Bindings: Bindings }>();
 
 const protect: MiddlewareHandler<{ Bindings: Bindings }> = async (c, next) => {
   const ip = c.req.header("cf-connecting-ip") ?? "unknown";
@@ -109,6 +127,7 @@ const protect: MiddlewareHandler<{ Bindings: Bindings }> = async (c, next) => {
 users.use("*", protect);
 messages.use("*", protect);
 replies.use("*", protect);
+tags.use("*", protect);
 
 users.post("/", async (c) => {
   const body = await readJson(c);
@@ -241,31 +260,36 @@ messages.post("/", async (c) => {
   if (body instanceof Response) return body;
   const input = parseAuthorBody(body);
   if (isFieldError(input)) return c.json(input, 400);
+  const tagNames = optionalTagNames(body);
+  if (isFieldError(tagNames)) return c.json(tagNames, 400);
 
   try {
     const author = await findUser(c.env.DB, input.user_id);
     if (!author) return c.json({ error: "user not found" }, 400);
     const pin = decidePin(input, null, input.user_id, c.env.CHAT_OWNER_USER_ID);
     if ("status" in pin) return c.json({ error: pin.error }, pin.status);
+    const resolved = await resolveTagNames(c.env.DB, tagNames ?? []);
+    if (isFieldError(resolved)) return c.json(resolved, 400);
     const now = unixSeconds();
-    const row = await c.env.DB.prepare(
-      `INSERT INTO messages (user_id, body, secret, links, pinned, pin_rank, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       RETURNING id, user_id, body, secret, links, pinned, pin_rank, created_at, updated_at`,
-    )
-      .bind(
-        input.user_id,
-        input.body,
-        input.secret ? 1 : 0,
-        JSON.stringify(input.links ?? []),
-        pin.pinned,
-        pin.pin_rank,
-        now,
-        now,
-      )
-      .first<Omit<MessageRow, "display_name" | "reply_count" | "like_count">>();
-    if (!row) return c.json({ error: "database query failed" }, 500);
-    return c.json(presentMessage(asMessage(row, author.display_name, 0, 0)), 201);
+    const messageId = await insertMessage(
+      c.env.DB,
+      {
+        user_id: input.user_id,
+        body: input.body,
+        secret: input.secret ? 1 : 0,
+        links: JSON.stringify(input.links ?? []),
+        pinned: pin.pinned,
+        pin_rank: pin.pin_rank,
+        created_at: now,
+        updated_at: now,
+      },
+      resolved.map((tag) => tag.id),
+    );
+    if (messageId === null) return c.json({ error: "database query failed" }, 500);
+    const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
+    const created = await findMessage(c.env.DB, messageId, input.user_id, owner);
+    if (!created) return c.json({ error: "message not found" }, 404);
+    return c.json(presentMessage(created), 201);
   } catch (error) {
     return databaseError(c, error);
   }
@@ -276,17 +300,30 @@ messages.get("/", async (c) => {
   if (viewer instanceof Response) return viewer;
   const bounds = page(c);
   if (isFieldError(bounds)) return c.json(bounds, 400);
+  const tagNames = parseTagFilter(c.req.query("tags"));
+  if (isFieldError(tagNames)) return c.json(tagNames, 400);
 
   try {
     const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
-    const { results } = await c.env.DB.prepare(
-      `${MESSAGE_SELECT}
-       WHERE m.secret = 0 OR m.user_id = ?1 OR ?1 = ?2
+    const resolved = tagNames ? await resolveTagNames(c.env.DB, tagNames) : [];
+    if (isFieldError(resolved)) return c.json(resolved, 400);
+    const binds: Array<string | number> = [viewer.id, owner];
+    let sql = `${MESSAGE_SELECT}
+       WHERE (m.secret = 0 OR m.user_id = ?1 OR ?1 = ?2)`;
+    if (resolved.length > 0) {
+      const marks = resolved.map((_, index) => `?${binds.length + index + 1}`).join(", ");
+      sql += `
+       AND EXISTS (
+         SELECT 1 FROM message_tags mt
+         WHERE mt.message_id = m.id AND mt.tag_id IN (${marks})
+       )`;
+      binds.push(...resolved.map((tag) => tag.id));
+    }
+    sql += `
        ORDER BY m.id DESC
-       LIMIT ?3 OFFSET ?4`,
-    )
-      .bind(viewer.id, owner, bounds.limit, bounds.offset)
-      .all<MessageRow>();
+       LIMIT ?${binds.length + 1} OFFSET ?${binds.length + 2}`;
+    binds.push(bounds.limit, bounds.offset);
+    const { results } = await c.env.DB.prepare(sql).bind(...binds).all<MessageRow>();
     return c.json(results.map(presentMessage));
   } catch (error) {
     return databaseError(c, error);
@@ -546,6 +583,8 @@ messages.put("/:id", async (c) => {
   if (body instanceof Response) return body;
   const input = parseAuthorBody(body);
   if (isFieldError(input)) return c.json(input, 400);
+  const tagNames = optionalTagNames(body);
+  if (isFieldError(tagNames)) return c.json(tagNames, 400);
 
   try {
     const actor = await findUser(c.env.DB, input.user_id);
@@ -559,13 +598,16 @@ messages.put("/:id", async (c) => {
 
     const pin = decidePin(input, row, input.user_id, c.env.CHAT_OWNER_USER_ID);
     if ("status" in pin) return c.json({ error: pin.error }, pin.status);
+    const resolved =
+      tagNames === undefined ? undefined : await resolveTagNames(c.env.DB, tagNames);
+    if (resolved && isFieldError(resolved)) return c.json(resolved, 400);
     const secret = input.secret === undefined ? row.secret : input.secret ? 1 : 0;
     const links =
       input.links === undefined ? row.links : JSON.stringify(input.links);
-    await c.env.DB.prepare(
-      `UPDATE messages SET body = ?, secret = ?, links = ?, pinned = ?, pin_rank = ?, updated_at = ? WHERE id = ?`,
-    )
-      .bind(
+    const statements = [
+      c.env.DB.prepare(
+        `UPDATE messages SET body = ?, secret = ?, links = ?, pinned = ?, pin_rank = ?, updated_at = ? WHERE id = ?`,
+      ).bind(
         input.body,
         secret,
         links,
@@ -573,8 +615,21 @@ messages.put("/:id", async (c) => {
         pin.pin_rank,
         Math.max(unixSeconds(), row.created_at),
         id,
-      )
-      .run();
+      ),
+    ];
+    if (resolved) {
+      statements.push(
+        c.env.DB.prepare(`DELETE FROM message_tags WHERE message_id = ?`).bind(id),
+      );
+      for (const tag of resolved) {
+        statements.push(
+          c.env.DB.prepare(
+            `INSERT INTO message_tags (message_id, tag_id) VALUES (?, ?)`,
+          ).bind(id, tag.id),
+        );
+      }
+    }
+    await c.env.DB.batch(statements);
     const updated = await findMessage(c.env.DB, id, input.user_id, owner);
     if (!updated) return c.json({ error: "message not found" }, 404);
     return c.json(presentMessage(updated));
@@ -694,11 +749,75 @@ replies.delete("/:id", async (c) => {
   }
 });
 
+tags.post("/", async (c) => {
+  const body = await readJson(c);
+  if (body instanceof Response) return body;
+  const input = parseCreateTag(body);
+  if (isFieldError(input)) return c.json(input, 400);
+
+  try {
+    const actor = await findUser(c.env.DB, input.user_id);
+    if (!actor) return c.json({ error: "user not found" }, 400);
+    if (!isChatOwner(input.user_id, c.env.CHAT_OWNER_USER_ID)) {
+      return c.json({ error: "forbidden" }, 403);
+    }
+    const row = await c.env.DB.prepare(
+      `INSERT INTO tags (name) VALUES (?) RETURNING id, name`,
+    )
+      .bind(input.name)
+      .first<TagRow>();
+    if (!row) return c.json({ error: "database query failed" }, 500);
+    return c.json(row, 201);
+  } catch (error) {
+    if (isUniqueViolation(error)) return c.json({ error: "tag already exists" }, 409);
+    return databaseError(c, error);
+  }
+});
+
+tags.get("/", async (c) => {
+  const viewer = await requireViewer(c);
+  if (viewer instanceof Response) return viewer;
+
+  try {
+    const { results } = await c.env.DB.prepare(
+      `SELECT id, name FROM tags ORDER BY name COLLATE NOCASE, id`,
+    ).all<TagRow>();
+    return c.json(results);
+  } catch (error) {
+    return databaseError(c, error);
+  }
+});
+
+tags.delete("/:id", async (c) => {
+  const id = parseId(c.req.param("id"));
+  if (id === null) return c.json({ error: "id must be a positive integer" }, 400);
+  const actorId = requiredQueryUserId(c.req.query("user_id"));
+  if (isFieldError(actorId)) return c.json(actorId, 400);
+
+  try {
+    const actor = await findUser(c.env.DB, actorId);
+    if (!actor) return c.json({ error: "user not found" }, 400);
+    if (!isChatOwner(actorId, c.env.CHAT_OWNER_USER_ID)) {
+      return c.json({ error: "forbidden" }, 403);
+    }
+    const deleted = await c.env.DB.prepare(
+      `DELETE FROM tags WHERE id = ? RETURNING id, name`,
+    )
+      .bind(id)
+      .first<TagRow>();
+    if (!deleted) return c.json({ error: "tag not found" }, 404);
+    return c.json(deleted);
+  } catch (error) {
+    return databaseError(c, error);
+  }
+});
+
 function presentMessage(row: MessageRow) {
   return {
     ...row,
     secret: row.secret === 1,
     links: parseStoredLinks(row.links),
+    tags: parseStoredTags(row.tags),
     pinned: row.pinned === 1,
     pin_rank: row.pin_rank,
   };
@@ -757,18 +876,8 @@ async function requireViewer(c: ChatContext): Promise<UserRow | Response> {
   return viewer;
 }
 
-function asMessage(
-  row: Omit<MessageRow, "display_name" | "reply_count" | "like_count">,
-  displayName: string,
-  replyCount: number,
-  likeCount: number,
-): MessageRow {
-  return {
-    ...row,
-    display_name: displayName,
-    reply_count: replyCount,
-    like_count: likeCount,
-  };
+function isChatOwner(actor: string, ownerId: string | undefined): boolean {
+  return typeof ownerId === "string" && ownerId.length > 0 && actor === ownerId;
 }
 
 function canMutate(
@@ -876,7 +985,7 @@ function parsePinPatch(
 ): { user_id: string; pinned?: boolean; pin_rank?: number } | FieldError {
   const body = jsonObject(value);
   if (isFieldError(body)) return body;
-  if ("body" in body || "secret" in body || "links" in body) {
+  if ("body" in body || "secret" in body || "links" in body || "tags" in body) {
     return { error: "body, secret, and links cannot be patched" };
   }
   const userId = requiredUserId(body.user_id);
@@ -1040,6 +1149,129 @@ function optionalNote(value: unknown): string | FieldError {
   return note;
 }
 
+function parseCreateTag(value: unknown): { user_id: string; name: string } | FieldError {
+  const body = jsonObject(value);
+  if (isFieldError(body)) return body;
+  const userId = requiredUserId(body.user_id);
+  if (isFieldError(userId)) return userId;
+  const name = requiredTagName(body.name);
+  if (isFieldError(name)) return name;
+  return { user_id: userId, name };
+}
+
+function requiredTagName(value: unknown): string | FieldError {
+  const name = requiredLimitedText(value, "name", 40);
+  if (isFieldError(name)) return name;
+  if (name.includes(",")) return { error: "name must not contain a comma" };
+  return name;
+}
+
+function optionalTagNames(value: unknown): string[] | undefined | FieldError {
+  const body = jsonObject(value);
+  if (isFieldError(body)) return body;
+  if (!("tags" in body)) return undefined;
+  return tagNameList(body.tags, "tags");
+}
+
+function parseTagFilter(value: string | undefined): string[] | undefined | FieldError {
+  if (value === undefined) return undefined;
+  return tagNameList(value.split(","), "tags");
+}
+
+function tagNameList(value: unknown, field: string): string[] | FieldError {
+  if (!Array.isArray(value)) return { error: `${field} must be an array` };
+  if (value.length > 10) return { error: `${field} must have at most 10 items` };
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (typeof item !== "string") return { error: `${field} item must be a string` };
+    const name = item.trim();
+    if (name.length === 0) return { error: `${field} item must not be empty` };
+    if (name.length > 40) return { error: `${field} item must be at most 40 characters` };
+    if (name.includes(",")) return { error: `${field} item must not contain a comma` };
+    const key = name.toLowerCase();
+    if (seen.has(key)) return { error: `${field} must be unique` };
+    seen.add(key);
+    names.push(name);
+  }
+  return names;
+}
+
+async function insertMessage(
+  db: D1Database,
+  message: {
+    user_id: string;
+    body: string;
+    secret: number;
+    links: string;
+    pinned: number;
+    pin_rank: number | null;
+    created_at: number;
+    updated_at: number;
+  },
+  tagIds: number[],
+): Promise<number | null> {
+  const inserted = await db
+    .prepare(
+      `INSERT INTO messages (user_id, body, secret, links, pinned, pin_rank, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       RETURNING id`,
+    )
+    .bind(
+      message.user_id,
+      message.body,
+      message.secret,
+      message.links,
+      message.pinned,
+      message.pin_rank,
+      message.created_at,
+      message.updated_at,
+    )
+    .first<{ id: number }>();
+  if (!inserted) return null;
+  if (tagIds.length === 0) return inserted.id;
+  try {
+    await db.batch(
+      tagIds.map((tagId) =>
+        db
+          .prepare(`INSERT INTO message_tags (message_id, tag_id) VALUES (?, ?)`)
+          .bind(inserted.id, tagId),
+      ),
+    );
+  } catch (error) {
+    await db.prepare(`DELETE FROM messages WHERE id = ?`).bind(inserted.id).run();
+    throw error;
+  }
+  return inserted.id;
+}
+
+async function resolveTagNames(
+  db: D1Database,
+  names: string[],
+): Promise<TagRow[] | FieldError> {
+  if (names.length === 0) return [];
+  const marks = names.map(() => "lower(?)").join(", ");
+  const { results } = await db
+    .prepare(`SELECT id, name FROM tags WHERE lower(name) IN (${marks})`)
+    .bind(...names)
+    .all<TagRow>();
+  if (results.length !== names.length) return { error: "tag not found" };
+  return results;
+}
+
+function parseStoredTags(value: string): TagRow[] {
+  const parsed: unknown = JSON.parse(value);
+  if (!Array.isArray(parsed)) return [];
+  const tags: TagRow[] = [];
+  for (const item of parsed) {
+    if (item === null || typeof item !== "object" || Array.isArray(item)) continue;
+    const row = item as Record<string, unknown>;
+    if (typeof row.id !== "number" || typeof row.name !== "string") continue;
+    tags.push({ id: row.id, name: row.name });
+  }
+  return tags;
+}
+
 function parseStoredLinks(value: string): MessageLink[] {
   const parsed: unknown = JSON.parse(value);
   if (!Array.isArray(parsed)) throw new Error("links must be an array");
@@ -1182,4 +1414,4 @@ function databaseError(c: ChatContext, error: unknown): Response {
   return c.json({ error: "database query failed" }, 500);
 }
 
-export { messages, replies, users };
+export { messages, replies, tags, users };

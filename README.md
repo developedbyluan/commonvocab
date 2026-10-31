@@ -695,9 +695,13 @@ The acting person is `user_id` in the JSON body, or the `user_id` query paramete
 
 `links` is an optional array on creating or editing a message. Each item has `id`, `text`, `url`, and `note`. Omitted on create stores `[]`. Omitted on edit leaves the current list. `url` must start with `http://` or `https://`. Replies do not have links.
 
+`tags` is an optional array of names on creating or editing a message. The chat owner creates the allowed names with `POST /tags` `{ user_id, name }`. `GET /tags?user_id=` lists them. `DELETE /tags/:id?user_id=` removes a name and detaches it from messages. Only the owner can create or delete a tag. A message can have at most 10 tags, and each name must already be in the catalog. Omit `tags` on create and the message has none. Omit `tags` on edit and the current tags stay. Sending `tags` replaces the list.
+
+Filter the list with `GET /messages?user_id=&tags=grammar,vocab`. A message matches when it has any of those tags. Omit `tags` and the list is not filtered by tag. `limit` defaults to 50, with a maximum of 100, and `offset` defaults to 0.
+
 `pinned` is an optional boolean and `pin_rank` is an optional integer of 1 or more. Only the chat owner can set them. `1` is more important than `2`. `GET /messages` stays newest first, so the client sorts pinned messages by `pin_rank`. Unpinning sets `pin_rank` to `null`. Omitting both fields on a PUT leaves the current pin.
 
-Change only the pin with `PATCH /messages/:id`. The body accepts `user_id` plus `pinned` and/or `pin_rank`. `body`, `secret`, and `links` are rejected. The message text stays as stored.
+Change only the pin with `PATCH /messages/:id`. The body accepts `user_id` plus `pinned` and/or `pin_rank`. `body`, `secret`, `links`, and `tags` are rejected. The message text stays as stored.
 
 `secret` is an optional boolean on creating or editing a message or reply. Omitted on create means public. Omitted on edit leaves the current value. A secret message is visible to its author and the chat owner. A secret reply is visible to its author, the parent message’s author, and the chat owner. Other callers do not see it in lists, and a direct fetch returns 404. Only someone who can see a message can reply to it or like it.
 
