@@ -695,6 +695,8 @@ The acting person is `user_id` in the JSON body, or the `user_id` query paramete
 
 `links` is an optional array on creating or editing a message. Each item has `id`, `text`, `url`, and `note`. Omitted on create stores `[]`. Omitted on edit leaves the current list. `url` must start with `http://` or `https://`. Replies do not have links.
 
+`pinned` is an optional boolean and `pin_rank` is an optional integer of 1 or more. Only the chat owner can set them. `1` is more important than `2`. `GET /messages` stays newest first, so the client sorts pinned messages by `pin_rank`. Unpinning sets `pin_rank` to `null`. Omitting both fields on edit leaves the current pin.
+
 `secret` is an optional boolean on creating or editing a message or reply. Omitted on create means public. Omitted on edit leaves the current value. A secret message is visible to its author and the chat owner. A secret reply is visible to its author, the parent message’s author, and the chat owner. Other callers do not see it in lists, and a direct fetch returns 404. Only someone who can see a message can reply to it or like it.
 
 Remove one like with `DELETE /messages/:id/likes/:userId?user_id=`. `:userId` is the person who liked the message. `user_id` is who is asking, and must be that person or the owner. The message must be one that person can see.

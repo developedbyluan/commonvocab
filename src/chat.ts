@@ -28,6 +28,8 @@ type MessageRow = {
   body: string;
   secret: number;
   links: string;
+  pinned: number;
+  pin_rank: number | null;
   created_at: number;
   updated_at: number;
   reply_count: number;
@@ -70,7 +72,7 @@ type ChatContext = {
   json: (body: unknown, status?: number) => Response;
 };
 
-const MESSAGE_SELECT = `SELECT m.id, m.user_id, u.display_name, m.body, m.secret, m.links, m.created_at, m.updated_at,
+const MESSAGE_SELECT = `SELECT m.id, m.user_id, u.display_name, m.body, m.secret, m.links, m.pinned, m.pin_rank, m.created_at, m.updated_at,
        (SELECT COUNT(*) FROM replies r
         WHERE r.message_id = m.id
           AND (r.secret = 0 OR r.user_id = ?1 OR m.user_id = ?1 OR ?1 = ?2)
@@ -243,17 +245,21 @@ messages.post("/", async (c) => {
   try {
     const author = await findUser(c.env.DB, input.user_id);
     if (!author) return c.json({ error: "user not found" }, 400);
+    const pin = decidePin(input, null, input.user_id, c.env.CHAT_OWNER_USER_ID);
+    if ("status" in pin) return c.json({ error: pin.error }, pin.status);
     const now = unixSeconds();
     const row = await c.env.DB.prepare(
-      `INSERT INTO messages (user_id, body, secret, links, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
-       RETURNING id, user_id, body, secret, links, created_at, updated_at`,
+      `INSERT INTO messages (user_id, body, secret, links, pinned, pin_rank, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       RETURNING id, user_id, body, secret, links, pinned, pin_rank, created_at, updated_at`,
     )
       .bind(
         input.user_id,
         input.body,
         input.secret ? 1 : 0,
         JSON.stringify(input.links ?? []),
+        pin.pinned,
+        pin.pin_rank,
         now,
         now,
       )
@@ -519,13 +525,23 @@ messages.put("/:id", async (c) => {
       return c.json({ error: "forbidden" }, 403);
     }
 
+    const pin = decidePin(input, row, input.user_id, c.env.CHAT_OWNER_USER_ID);
+    if ("status" in pin) return c.json({ error: pin.error }, pin.status);
     const secret = input.secret === undefined ? row.secret : input.secret ? 1 : 0;
     const links =
       input.links === undefined ? row.links : JSON.stringify(input.links);
     await c.env.DB.prepare(
-      `UPDATE messages SET body = ?, secret = ?, links = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE messages SET body = ?, secret = ?, links = ?, pinned = ?, pin_rank = ?, updated_at = ? WHERE id = ?`,
     )
-      .bind(input.body, secret, links, Math.max(unixSeconds(), row.created_at), id)
+      .bind(
+        input.body,
+        secret,
+        links,
+        pin.pinned,
+        pin.pin_rank,
+        Math.max(unixSeconds(), row.created_at),
+        id,
+      )
       .run();
     const updated = await findMessage(c.env.DB, id, input.user_id, owner);
     if (!updated) return c.json({ error: "message not found" }, 404);
@@ -647,7 +663,13 @@ replies.delete("/:id", async (c) => {
 });
 
 function presentMessage(row: MessageRow) {
-  return { ...row, secret: row.secret === 1, links: parseStoredLinks(row.links) };
+  return {
+    ...row,
+    secret: row.secret === 1,
+    links: parseStoredLinks(row.links),
+    pinned: row.pinned === 1,
+    pin_rank: row.pin_rank,
+  };
 }
 
 function presentReply(row: ReplyRow) {
@@ -820,7 +842,14 @@ function parseActorName(
 function parseAuthorBody(
   value: unknown,
 ):
-  | { user_id: string; body: string; secret?: boolean; links?: MessageLink[] }
+  | {
+      user_id: string;
+      body: string;
+      secret?: boolean;
+      links?: MessageLink[];
+      pinned?: boolean;
+      pin_rank?: number;
+    }
   | FieldError {
   const actor = parseActor(value);
   if (isFieldError(actor)) return actor;
@@ -832,13 +861,69 @@ function parseAuthorBody(
   if (isFieldError(secret)) return secret;
   const links = optionalLinks(body.links);
   if (isFieldError(links)) return links;
-  return { user_id: actor.user_id, body: text, secret, links };
+  const pinned = optionalPinned(body.pinned);
+  if (isFieldError(pinned)) return pinned;
+  const pinRank = optionalPinRank(body.pin_rank);
+  if (isFieldError(pinRank)) return pinRank;
+  return {
+    user_id: actor.user_id,
+    body: text,
+    secret,
+    links,
+    pinned,
+    pin_rank: pinRank,
+  };
 }
 
 function optionalSecret(value: unknown): boolean | undefined | FieldError {
   if (value === undefined) return undefined;
   if (typeof value !== "boolean") return { error: "secret must be a boolean" };
   return value;
+}
+
+function optionalPinned(value: unknown): boolean | undefined | FieldError {
+  if (value === undefined) return undefined;
+  if (typeof value !== "boolean") return { error: "pinned must be a boolean" };
+  return value;
+}
+
+function optionalPinRank(value: unknown): number | undefined | FieldError {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    return { error: "pin_rank must be an integer greater than or equal to 1" };
+  }
+  return value;
+}
+
+function decidePin(
+  input: { pinned?: boolean; pin_rank?: number },
+  current: { pinned: number; pin_rank: number | null } | null,
+  actor: string,
+  ownerId: string | undefined,
+): { pinned: number; pin_rank: number | null } | { error: string; status: 400 | 403 } {
+  const currentPinned = current !== null && current.pinned === 1;
+  const currentRank = current?.pin_rank ?? null;
+  const nextPinned = input.pinned === undefined ? currentPinned : input.pinned;
+  if (
+    nextPinned &&
+    input.pin_rank === undefined &&
+    !(currentPinned && currentRank !== null)
+  ) {
+    return { error: "pin_rank is required when pinned is true", status: 400 };
+  }
+
+  const nextRank = nextPinned
+    ? input.pin_rank !== undefined
+      ? input.pin_rank
+      : currentRank
+    : null;
+  const pinnedChanged = input.pinned !== undefined && input.pinned !== currentPinned;
+  const rankChanged = input.pin_rank !== undefined && input.pin_rank !== currentRank;
+  const owner = typeof ownerId === "string" && ownerId.length > 0 && actor === ownerId;
+  if ((pinnedChanged || rankChanged) && !owner) {
+    return { error: "forbidden", status: 403 };
+  }
+  return { pinned: nextPinned ? 1 : 0, pin_rank: nextRank };
 }
 
 function optionalLinks(
