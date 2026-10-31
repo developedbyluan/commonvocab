@@ -14,12 +14,20 @@ type UserRow = {
   created_at: number;
 };
 
+type MessageLink = {
+  id: number;
+  text: string;
+  url: string;
+  note: string;
+};
+
 type MessageRow = {
   id: number;
   user_id: string;
   display_name: string;
   body: string;
   secret: number;
+  links: string;
   created_at: number;
   updated_at: number;
   reply_count: number;
@@ -62,7 +70,7 @@ type ChatContext = {
   json: (body: unknown, status?: number) => Response;
 };
 
-const MESSAGE_SELECT = `SELECT m.id, m.user_id, u.display_name, m.body, m.secret, m.created_at, m.updated_at,
+const MESSAGE_SELECT = `SELECT m.id, m.user_id, u.display_name, m.body, m.secret, m.links, m.created_at, m.updated_at,
        (SELECT COUNT(*) FROM replies r
         WHERE r.message_id = m.id
           AND (r.secret = 0 OR r.user_id = ?1 OR m.user_id = ?1 OR ?1 = ?2)
@@ -237,11 +245,18 @@ messages.post("/", async (c) => {
     if (!author) return c.json({ error: "user not found" }, 400);
     const now = unixSeconds();
     const row = await c.env.DB.prepare(
-      `INSERT INTO messages (user_id, body, secret, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?)
-       RETURNING id, user_id, body, secret, created_at, updated_at`,
+      `INSERT INTO messages (user_id, body, secret, links, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       RETURNING id, user_id, body, secret, links, created_at, updated_at`,
     )
-      .bind(input.user_id, input.body, input.secret ? 1 : 0, now, now)
+      .bind(
+        input.user_id,
+        input.body,
+        input.secret ? 1 : 0,
+        JSON.stringify(input.links ?? []),
+        now,
+        now,
+      )
       .first<Omit<MessageRow, "display_name" | "reply_count" | "like_count">>();
     if (!row) return c.json({ error: "database query failed" }, 500);
     return c.json(presentMessage(asMessage(row, author.display_name, 0, 0)), 201);
@@ -505,10 +520,12 @@ messages.put("/:id", async (c) => {
     }
 
     const secret = input.secret === undefined ? row.secret : input.secret ? 1 : 0;
+    const links =
+      input.links === undefined ? row.links : JSON.stringify(input.links);
     await c.env.DB.prepare(
-      `UPDATE messages SET body = ?, secret = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE messages SET body = ?, secret = ?, links = ?, updated_at = ? WHERE id = ?`,
     )
-      .bind(input.body, secret, Math.max(unixSeconds(), row.created_at), id)
+      .bind(input.body, secret, links, Math.max(unixSeconds(), row.created_at), id)
       .run();
     const updated = await findMessage(c.env.DB, id, input.user_id, owner);
     if (!updated) return c.json({ error: "message not found" }, 404);
@@ -630,7 +647,7 @@ replies.delete("/:id", async (c) => {
 });
 
 function presentMessage(row: MessageRow) {
-  return { ...row, secret: row.secret === 1 };
+  return { ...row, secret: row.secret === 1, links: parseStoredLinks(row.links) };
 }
 
 function presentReply(row: ReplyRow) {
@@ -802,7 +819,9 @@ function parseActorName(
 
 function parseAuthorBody(
   value: unknown,
-): { user_id: string; body: string; secret?: boolean } | FieldError {
+):
+  | { user_id: string; body: string; secret?: boolean; links?: MessageLink[] }
+  | FieldError {
   const actor = parseActor(value);
   if (isFieldError(actor)) return actor;
   const body = jsonObject(value);
@@ -811,13 +830,83 @@ function parseAuthorBody(
   if (isFieldError(text)) return text;
   const secret = optionalSecret(body.secret);
   if (isFieldError(secret)) return secret;
-  return { user_id: actor.user_id, body: text, secret };
+  const links = optionalLinks(body.links);
+  if (isFieldError(links)) return links;
+  return { user_id: actor.user_id, body: text, secret, links };
 }
 
 function optionalSecret(value: unknown): boolean | undefined | FieldError {
   if (value === undefined) return undefined;
   if (typeof value !== "boolean") return { error: "secret must be a boolean" };
   return value;
+}
+
+function optionalLinks(
+  value: unknown,
+): MessageLink[] | undefined | FieldError {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return { error: "links must be an array" };
+  if (value.length > 20) return { error: "links must have at most 20 items" };
+  const links: MessageLink[] = [];
+  const seen = new Set<number>();
+  for (const item of value) {
+    const link = requiredLink(item);
+    if (isFieldError(link)) return link;
+    if (seen.has(link.id)) return { error: "links.id must be unique" };
+    seen.add(link.id);
+    links.push(link);
+  }
+  return links;
+}
+
+function requiredLink(value: unknown): MessageLink | FieldError {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { error: "links item must be an object" };
+  }
+  const body = value as Record<string, unknown>;
+  const id = requiredLinkId(body.id);
+  if (isFieldError(id)) return id;
+  const text = requiredLimitedText(body.text, "links.text", 200);
+  if (isFieldError(text)) return text;
+  const url = requiredLinkUrl(body.url);
+  if (isFieldError(url)) return url;
+  const note = optionalNote(body.note);
+  if (isFieldError(note)) return note;
+  return { id, text, url, note };
+}
+
+function requiredLinkId(value: unknown): number | FieldError {
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    return { error: "links.id must be an integer" };
+  }
+  if (value < 0) {
+    return { error: "links.id must be greater than or equal to 0" };
+  }
+  return value;
+}
+
+function requiredLinkUrl(value: unknown): string | FieldError {
+  const url = requiredLimitedText(value, "links.url", 2000);
+  if (isFieldError(url)) return url;
+  if (!url.startsWith("http://") && !url.startsWith("https://")) {
+    return { error: "links.url must start with http:// or https://" };
+  }
+  return url;
+}
+
+function optionalNote(value: unknown): string | FieldError {
+  if (typeof value !== "string") return { error: "links.note must be a string" };
+  const note = value.trim();
+  if (note.length > 500) {
+    return { error: "links.note must be at most 500 characters" };
+  }
+  return note;
+}
+
+function parseStoredLinks(value: string): MessageLink[] {
+  const parsed: unknown = JSON.parse(value);
+  if (!Array.isArray(parsed)) throw new Error("links must be an array");
+  return parsed as MessageLink[];
 }
 
 function jsonObject(value: unknown): Record<string, unknown> | FieldError {
