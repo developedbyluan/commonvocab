@@ -699,7 +699,9 @@ The acting person is `user_id` in the JSON body, or the `user_id` query paramete
 
 Filter the list with `GET /messages?user_id=&tags=grammar,vocab`. A message matches when it has any of those tags. Omit `tags` and the list is not filtered by tag. `limit` defaults to 50, with a maximum of 100, and `offset` defaults to 0.
 
-`pinned` is an optional boolean and `pin_rank` is an optional integer of 1 or more. Only the chat owner can set them. `1` is more important than `2`. `GET /messages` stays newest first, so the client sorts pinned messages by `pin_rank`. Unpinning sets `pin_rank` to `null`. Omitting both fields on a PUT leaves the current pin.
+`pinned` is an optional boolean and `pin_rank` is an optional integer of 1 or more. Only the chat owner can set them. `1` is more important than `2`. Unpinning sets `pin_rank` to `null`. Omitting both fields on a PUT leaves the current pin.
+
+`GET /messages` stays newest first. Load the pins directly with `GET /messages?user_id=&pinned=true`. Any existing user can call it. The rows are pinned messages that person can see, ordered by `pin_rank`, and `limit` and `offset` still apply. `pinned=false` is rejected. A secret pin stays visible only to its author and the chat owner.
 
 Change only the pin with `PATCH /messages/:id`. The body accepts `user_id` plus `pinned` and/or `pin_rank`. `body`, `secret`, `links`, and `tags` are rejected. The message text stays as stored.
 
