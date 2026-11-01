@@ -302,6 +302,8 @@ messages.get("/", async (c) => {
   if (isFieldError(bounds)) return c.json(bounds, 400);
   const tagNames = parseTagFilter(c.req.query("tags"));
   if (isFieldError(tagNames)) return c.json(tagNames, 400);
+  const pinnedOnly = parsePinnedFilter(c.req.query("pinned"));
+  if (isFieldError(pinnedOnly)) return c.json(pinnedOnly, 400);
 
   try {
     const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
@@ -310,6 +312,7 @@ messages.get("/", async (c) => {
     const binds: Array<string | number> = [viewer.id, owner];
     let sql = `${MESSAGE_SELECT}
        WHERE (m.secret = 0 OR m.user_id = ?1 OR ?1 = ?2)`;
+    if (pinnedOnly) sql += ` AND m.pinned = 1`;
     if (resolved.length > 0) {
       const marks = resolved.map((_, index) => `?${binds.length + index + 1}`).join(", ");
       sql += `
@@ -319,8 +322,12 @@ messages.get("/", async (c) => {
        )`;
       binds.push(...resolved.map((tag) => tag.id));
     }
+    sql += pinnedOnly
+      ? `
+       ORDER BY m.pin_rank ASC, m.id DESC`
+      : `
+       ORDER BY m.id DESC`;
     sql += `
-       ORDER BY m.id DESC
        LIMIT ?${binds.length + 1} OFFSET ?${binds.length + 2}`;
     binds.push(bounds.limit, bounds.offset);
     const { results } = await c.env.DB.prepare(sql).bind(...binds).all<MessageRow>();
@@ -1176,6 +1183,12 @@ function optionalTagNames(value: unknown): string[] | undefined | FieldError {
 function parseTagFilter(value: string | undefined): string[] | undefined | FieldError {
   if (value === undefined) return undefined;
   return tagNameList(value.split(","), "tags");
+}
+
+function parsePinnedFilter(value: string | undefined): boolean | FieldError {
+  if (value === undefined) return false;
+  if (value === "true") return true;
+  return { error: "pinned must be true" };
 }
 
 function tagNameList(value: unknown, field: string): string[] | FieldError {
