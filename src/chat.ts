@@ -8,9 +8,13 @@ type Bindings = CloudflareBindings & {
   CHAT_OWNER_USER_ID?: string;
 };
 
+const ROLES = ["standard", "premium", "vip", "vvip"] as const;
+type AllowedRole = (typeof ROLES)[number];
+
 type UserRow = {
   id: string;
   display_name: string;
+  role: AllowedRole;
   created_at: number;
 };
 
@@ -34,6 +38,7 @@ type MessageRow = {
   secret: number;
   links: string;
   tags: string;
+  allowed_roles: string;
   pinned: number;
   pin_rank: number | null;
   created_at: number;
@@ -56,6 +61,7 @@ type ReplyRow = {
 type ReplyAccess = ReplyRow & {
   message_user_id: string;
   message_secret: number;
+  message_allowed_roles: string;
 };
 
 type LikeRow = {
@@ -78,7 +84,7 @@ type ChatContext = {
   json: (body: unknown, status?: number) => Response;
 };
 
-const MESSAGE_SELECT = `SELECT m.id, m.user_id, u.display_name, m.body, m.secret, m.links, m.pinned, m.pin_rank, m.created_at, m.updated_at,
+const MESSAGE_SELECT = `SELECT m.id, m.user_id, u.display_name, m.body, m.secret, m.links, m.allowed_roles, m.pinned, m.pin_rank, m.created_at, m.updated_at,
        (SELECT COUNT(*) FROM replies r
         WHERE r.message_id = m.id
           AND (r.secret = 0 OR r.user_id = ?1 OR m.user_id = ?1 OR ?1 = ?2)
@@ -138,11 +144,11 @@ users.post("/", async (c) => {
   const createdAt = unixSeconds();
   try {
     const row = await c.env.DB.prepare(
-      `INSERT INTO users (id, display_name, created_at)
-       VALUES (?, ?, ?)
-       RETURNING id, display_name, created_at`,
+      `INSERT INTO users (id, display_name, role, created_at)
+       VALUES (?, ?, ?, ?)
+       RETURNING id, display_name, role, created_at`,
     )
-      .bind(input.id, input.display_name, createdAt)
+      .bind(input.id, input.display_name, input.role, createdAt)
       .first<UserRow>();
     if (!row) return c.json({ error: "database query failed" }, 500);
     return c.json(row, 201);
@@ -160,7 +166,7 @@ users.get("/", async (c) => {
 
   try {
     const { results } = await c.env.DB.prepare(
-      `SELECT id, display_name, created_at
+      `SELECT id, display_name, role, created_at
        FROM users
        ORDER BY created_at, id
        LIMIT ?1 OFFSET ?2`,
@@ -202,12 +208,14 @@ users.put("/:id", async (c) => {
     if (!canMutate(input.user_id, row.id, c.env.CHAT_OWNER_USER_ID)) {
       return c.json({ error: "forbidden" }, 403);
     }
+    const role = decideUserRole(input, row.role, input.user_id, c.env.CHAT_OWNER_USER_ID);
+    if ("status" in role) return c.json({ error: role.error }, role.status);
 
     const updated = await c.env.DB.prepare(
-      `UPDATE users SET display_name = ? WHERE id = ?
-       RETURNING id, display_name, created_at`,
+      `UPDATE users SET display_name = ?, role = ? WHERE id = ?
+       RETURNING id, display_name, role, created_at`,
     )
-      .bind(input.display_name, id)
+      .bind(input.display_name, role.role, id)
       .first<UserRow>();
     if (!updated) return c.json({ error: "user not found" }, 404);
     return c.json(updated);
@@ -244,7 +252,7 @@ users.delete("/:id", async (c) => {
     }
 
     const deleted = await c.env.DB.prepare(
-      `DELETE FROM users WHERE id = ? RETURNING id, display_name, created_at`,
+      `DELETE FROM users WHERE id = ? RETURNING id, display_name, role, created_at`,
     )
       .bind(id)
       .first<UserRow>();
@@ -268,6 +276,13 @@ messages.post("/", async (c) => {
     if (!author) return c.json({ error: "user not found" }, 400);
     const pin = decidePin(input, null, input.user_id, c.env.CHAT_OWNER_USER_ID);
     if ("status" in pin) return c.json({ error: pin.error }, pin.status);
+    const roles = decideAllowedRoles(
+      input,
+      null,
+      input.user_id,
+      c.env.CHAT_OWNER_USER_ID,
+    );
+    if ("status" in roles) return c.json({ error: roles.error }, roles.status);
     const resolved = await resolveTagNames(c.env.DB, tagNames ?? []);
     if (isFieldError(resolved)) return c.json(resolved, 400);
     const now = unixSeconds();
@@ -278,6 +293,7 @@ messages.post("/", async (c) => {
         body: input.body,
         secret: input.secret ? 1 : 0,
         links: JSON.stringify(input.links ?? []),
+        allowed_roles: JSON.stringify(roles.allowed_roles),
         pinned: pin.pinned,
         pin_rank: pin.pin_rank,
         created_at: now,
@@ -309,9 +325,12 @@ messages.get("/", async (c) => {
     const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
     const resolved = tagNames ? await resolveTagNames(c.env.DB, tagNames) : [];
     if (isFieldError(resolved)) return c.json(resolved, 400);
-    const binds: Array<string | number> = [viewer.id, owner];
+    const binds: Array<string | number> = [viewer.id, owner, viewer.role];
     let sql = `${MESSAGE_SELECT}
-       WHERE (m.secret = 0 OR m.user_id = ?1 OR ?1 = ?2)`;
+       WHERE (m.secret = 0 OR m.user_id = ?1 OR ?1 = ?2)
+         AND (?1 = ?2 OR EXISTS (
+           SELECT 1 FROM json_each(m.allowed_roles) WHERE value = ?3
+         ))`;
     if (pinnedOnly) sql += ` AND m.pinned = 1`;
     if (resolved.length > 0) {
       const marks = resolved.map((_, index) => `?${binds.length + index + 1}`).join(", ");
@@ -352,10 +371,7 @@ messages.post("/:id/replies", async (c) => {
     if (!author) return c.json({ error: "user not found" }, 400);
     const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
     const message = await findMessage(c.env.DB, messageId, input.user_id, owner);
-    if (
-      !message ||
-      !canSeeMessage(input.user_id, message.user_id, message.secret, owner)
-    ) {
+    if (!message || !canSeeMessageRow(author, message, owner)) {
       return c.json({ error: "message not found" }, 404);
     }
     const now = unixSeconds();
@@ -386,10 +402,7 @@ messages.get("/:id/replies", async (c) => {
   try {
     const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
     const message = await findMessage(c.env.DB, messageId, viewer.id, owner);
-    if (
-      !message ||
-      !canSeeMessage(viewer.id, message.user_id, message.secret, owner)
-    ) {
+    if (!message || !canSeeMessageRow(viewer, message, owner)) {
       return c.json({ error: "message not found" }, 404);
     }
     const { results } = await c.env.DB.prepare(
@@ -422,10 +435,7 @@ messages.post("/:id/likes", async (c) => {
     if (!actor) return c.json({ error: "user not found" }, 400);
     const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
     const message = await findMessage(c.env.DB, messageId, input.user_id, owner);
-    if (
-      !message ||
-      !canSeeMessage(input.user_id, message.user_id, message.secret, owner)
-    ) {
+    if (!message || !canSeeMessageRow(actor, message, owner)) {
       return c.json({ error: "message not found" }, 404);
     }
 
@@ -461,10 +471,7 @@ messages.get("/:id/likes", async (c) => {
   try {
     const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
     const message = await findMessage(c.env.DB, messageId, viewer.id, owner);
-    if (
-      !message ||
-      !canSeeMessage(viewer.id, message.user_id, message.secret, owner)
-    ) {
+    if (!message || !canSeeMessageRow(viewer, message, owner)) {
       return c.json({ error: "message not found" }, 404);
     }
     const { results } = await c.env.DB.prepare(
@@ -498,10 +505,7 @@ messages.delete("/:id/likes/:userId", async (c) => {
     if (!actor) return c.json({ error: "user not found" }, 400);
     const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
     const message = await findMessage(c.env.DB, messageId, actorId, owner);
-    if (
-      !message ||
-      !canSeeMessage(actorId, message.user_id, message.secret, owner)
-    ) {
+    if (!message || !canSeeMessageRow(actor, message, owner)) {
       return c.json({ error: "message not found" }, 404);
     }
     const like = await findLike(c.env.DB, messageId, likerId);
@@ -533,7 +537,7 @@ messages.get("/:id", async (c) => {
   try {
     const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
     const row = await findMessage(c.env.DB, id, viewer.id, owner);
-    if (!row || !canSeeMessage(viewer.id, row.user_id, row.secret, owner)) {
+    if (!row || !canSeeMessageRow(viewer, row, owner)) {
       return c.json({ error: "message not found" }, 404);
     }
     const { results } = await c.env.DB.prepare(
@@ -564,16 +568,29 @@ messages.patch("/:id", async (c) => {
     if (!actor) return c.json({ error: "user not found" }, 400);
     const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
     const row = await findMessage(c.env.DB, id, input.user_id, owner);
-    if (!row || !canSeeMessage(input.user_id, row.user_id, row.secret, owner)) {
+    if (!row || !canSeeMessageRow(actor, row, owner)) {
       return c.json({ error: "message not found" }, 404);
     }
 
     const pin = decidePin(input, row, input.user_id, c.env.CHAT_OWNER_USER_ID);
     if ("status" in pin) return c.json({ error: pin.error }, pin.status);
+    const roles = decideAllowedRoles(
+      input,
+      parseStoredAllowedRoles(row.allowed_roles),
+      input.user_id,
+      c.env.CHAT_OWNER_USER_ID,
+    );
+    if ("status" in roles) return c.json({ error: roles.error }, roles.status);
     await c.env.DB.prepare(
-      `UPDATE messages SET pinned = ?, pin_rank = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE messages SET pinned = ?, pin_rank = ?, allowed_roles = ?, updated_at = ? WHERE id = ?`,
     )
-      .bind(pin.pinned, pin.pin_rank, Math.max(unixSeconds(), row.created_at), id)
+      .bind(
+        pin.pinned,
+        pin.pin_rank,
+        JSON.stringify(roles.allowed_roles),
+        Math.max(unixSeconds(), row.created_at),
+        id,
+      )
       .run();
     const updated = await findMessage(c.env.DB, id, input.user_id, owner);
     if (!updated) return c.json({ error: "message not found" }, 404);
@@ -605,6 +622,13 @@ messages.put("/:id", async (c) => {
 
     const pin = decidePin(input, row, input.user_id, c.env.CHAT_OWNER_USER_ID);
     if ("status" in pin) return c.json({ error: pin.error }, pin.status);
+    const roles = decideAllowedRoles(
+      input,
+      parseStoredAllowedRoles(row.allowed_roles),
+      input.user_id,
+      c.env.CHAT_OWNER_USER_ID,
+    );
+    if ("status" in roles) return c.json({ error: roles.error }, roles.status);
     const resolved =
       tagNames === undefined ? undefined : await resolveTagNames(c.env.DB, tagNames);
     if (resolved && isFieldError(resolved)) return c.json(resolved, 400);
@@ -613,13 +637,14 @@ messages.put("/:id", async (c) => {
       input.links === undefined ? row.links : JSON.stringify(input.links);
     const statements = [
       c.env.DB.prepare(
-        `UPDATE messages SET body = ?, secret = ?, links = ?, pinned = ?, pin_rank = ?, updated_at = ? WHERE id = ?`,
+        `UPDATE messages SET body = ?, secret = ?, links = ?, pinned = ?, pin_rank = ?, allowed_roles = ?, updated_at = ? WHERE id = ?`,
       ).bind(
         input.body,
         secret,
         links,
         pin.pinned,
         pin.pin_rank,
+        JSON.stringify(roles.allowed_roles),
         Math.max(unixSeconds(), row.created_at),
         id,
       ),
@@ -682,11 +707,12 @@ replies.get("/:id", async (c) => {
     if (
       !row ||
       !canSeeReply(
-        viewer.id,
+        viewer,
         row.user_id,
         row.message_user_id,
         row.secret,
         row.message_secret,
+        row.message_allowed_roles,
         chatOwner(c.env.CHAT_OWNER_USER_ID),
       )
     ) {
@@ -825,6 +851,7 @@ function presentMessage(row: MessageRow) {
     secret: row.secret === 1,
     links: parseStoredLinks(row.links),
     tags: parseStoredTags(row.tags),
+    allowed_roles: parseStoredAllowedRoles(row.allowed_roles),
     pinned: row.pinned === 1,
     pin_rank: row.pin_rank,
   };
@@ -852,27 +879,54 @@ function canSeeMessage(
   author: string,
   secret: number,
   owner: string,
+  viewerRole: AllowedRole,
+  allowedRolesJson: string,
 ): boolean {
-  if (secret === 0) return true;
-  return viewer === author || (owner.length > 0 && viewer === owner);
+  if (secret === 1) {
+    if (!(viewer === author || (owner.length > 0 && viewer === owner))) {
+      return false;
+    }
+  }
+  if (owner.length > 0 && viewer === owner) return true;
+  return parseStoredAllowedRoles(allowedRolesJson).includes(viewerRole);
+}
+
+function canSeeMessageRow(
+  viewer: UserRow,
+  message: Pick<MessageRow, "user_id" | "secret" | "allowed_roles">,
+  owner: string,
+): boolean {
+  return canSeeMessage(
+    viewer.id,
+    message.user_id,
+    message.secret,
+    owner,
+    viewer.role,
+    message.allowed_roles,
+  );
 }
 
 function canSeeReply(
-  viewer: string,
+  viewer: UserRow,
   replyAuthor: string,
   messageAuthor: string,
   replySecret: number,
   messageSecret: number,
+  messageAllowedRoles: string,
   owner: string,
 ): boolean {
   if (replySecret === 1) {
-    return (
-      viewer === replyAuthor ||
-      viewer === messageAuthor ||
-      (owner.length > 0 && viewer === owner)
-    );
+    if (viewer.id === replyAuthor) return true;
+    if (owner.length > 0 && viewer.id === owner) return true;
   }
-  return canSeeMessage(viewer, messageAuthor, messageSecret, owner);
+  return canSeeMessage(
+    viewer.id,
+    messageAuthor,
+    messageSecret,
+    owner,
+    viewer.role,
+    messageAllowedRoles,
+  );
 }
 
 async function requireViewer(c: ChatContext): Promise<UserRow | Response> {
@@ -898,7 +952,7 @@ function canMutate(
 
 async function findUser(db: D1Database, id: string): Promise<UserRow | null> {
   return db
-    .prepare(`SELECT id, display_name, created_at FROM users WHERE id = ?`)
+    .prepare(`SELECT id, display_name, role, created_at FROM users WHERE id = ?`)
     .bind(id)
     .first<UserRow>();
 }
@@ -929,7 +983,8 @@ async function findReplyAccess(
   return db
     .prepare(
       `SELECT r.id, r.message_id, r.user_id, u.display_name, r.body, r.secret, r.created_at, r.updated_at,
-              m.user_id AS message_user_id, m.secret AS message_secret
+              m.user_id AS message_user_id, m.secret AS message_secret,
+              m.allowed_roles AS message_allowed_roles
        FROM replies r
        JOIN users u ON u.id = r.user_id
        JOIN messages m ON m.id = r.message_id
@@ -957,14 +1012,16 @@ async function findLike(
 
 function parseCreateUser(
   value: unknown,
-): { id: string; display_name: string } | FieldError {
+): { id: string; display_name: string; role: AllowedRole } | FieldError {
   const body = jsonObject(value);
   if (isFieldError(body)) return body;
   const id = requiredUserId(body.id);
   if (isFieldError(id)) return id;
   const displayName = requiredLimitedText(body.display_name, "display_name", 80);
   if (isFieldError(displayName)) return displayName;
-  return { id, display_name: displayName };
+  const role = requiredRole(body.role);
+  if (isFieldError(role)) return role;
+  return { id, display_name: displayName, role };
 }
 
 function parseActor(value: unknown): { user_id: string } | FieldError {
@@ -977,19 +1034,28 @@ function parseActor(value: unknown): { user_id: string } | FieldError {
 
 function parseActorName(
   value: unknown,
-): { user_id: string; display_name: string } | FieldError {
+): { user_id: string; display_name: string; role?: AllowedRole } | FieldError {
   const actor = parseActor(value);
   if (isFieldError(actor)) return actor;
   const body = jsonObject(value);
   if (isFieldError(body)) return body;
   const displayName = requiredLimitedText(body.display_name, "display_name", 80);
   if (isFieldError(displayName)) return displayName;
-  return { user_id: actor.user_id, display_name: displayName };
+  const role = optionalRole(body.role);
+  if (isFieldError(role)) return role;
+  return { user_id: actor.user_id, display_name: displayName, role };
 }
 
 function parsePinPatch(
   value: unknown,
-): { user_id: string; pinned?: boolean; pin_rank?: number } | FieldError {
+):
+  | {
+      user_id: string;
+      pinned?: boolean;
+      pin_rank?: number;
+      allowed_roles?: AllowedRole[];
+    }
+  | FieldError {
   const body = jsonObject(value);
   if (isFieldError(body)) return body;
   if ("body" in body || "secret" in body || "links" in body || "tags" in body) {
@@ -1001,10 +1067,21 @@ function parsePinPatch(
   if (isFieldError(pinned)) return pinned;
   const pinRank = optionalPinRank(body.pin_rank);
   if (isFieldError(pinRank)) return pinRank;
-  if (pinned === undefined && pinRank === undefined) {
-    return { error: "pinned or pin_rank is required" };
+  const allowedRoles = optionalAllowedRoles(body.allowed_roles);
+  if (isFieldError(allowedRoles)) return allowedRoles;
+  if (
+    pinned === undefined &&
+    pinRank === undefined &&
+    allowedRoles === undefined
+  ) {
+    return { error: "pinned, pin_rank, or allowed_roles is required" };
   }
-  return { user_id: userId, pinned, pin_rank: pinRank };
+  return {
+    user_id: userId,
+    pinned,
+    pin_rank: pinRank,
+    allowed_roles: allowedRoles,
+  };
 }
 
 function parseAuthorBody(
@@ -1017,6 +1094,7 @@ function parseAuthorBody(
       links?: MessageLink[];
       pinned?: boolean;
       pin_rank?: number;
+      allowed_roles?: AllowedRole[];
     }
   | FieldError {
   const actor = parseActor(value);
@@ -1033,6 +1111,8 @@ function parseAuthorBody(
   if (isFieldError(pinned)) return pinned;
   const pinRank = optionalPinRank(body.pin_rank);
   if (isFieldError(pinRank)) return pinRank;
+  const allowedRoles = optionalAllowedRoles(body.allowed_roles);
+  if (isFieldError(allowedRoles)) return allowedRoles;
   return {
     user_id: actor.user_id,
     body: text,
@@ -1040,6 +1120,7 @@ function parseAuthorBody(
     links,
     pinned,
     pin_rank: pinRank,
+    allowed_roles: allowedRoles,
   };
 }
 
@@ -1087,11 +1168,107 @@ function decidePin(
     : null;
   const pinnedChanged = input.pinned !== undefined && input.pinned !== currentPinned;
   const rankChanged = input.pin_rank !== undefined && input.pin_rank !== currentRank;
-  const owner = typeof ownerId === "string" && ownerId.length > 0 && actor === ownerId;
-  if ((pinnedChanged || rankChanged) && !owner) {
+  if ((pinnedChanged || rankChanged) && !isChatOwner(actor, ownerId)) {
     return { error: "forbidden", status: 403 };
   }
   return { pinned: nextPinned ? 1 : 0, pin_rank: nextRank };
+}
+
+function decideAllowedRoles(
+  input: { allowed_roles?: AllowedRole[] },
+  current: AllowedRole[] | null,
+  actor: string,
+  ownerId: string | undefined,
+):
+  | { allowed_roles: AllowedRole[] }
+  | { error: string; status: 400 | 403 } {
+  const currentRoles = current ?? ["standard"];
+  if (input.allowed_roles === undefined) {
+    return { allowed_roles: currentRoles };
+  }
+  if (
+    !sameAllowedRoles(input.allowed_roles, currentRoles) &&
+    !isChatOwner(actor, ownerId)
+  ) {
+    return { error: "forbidden", status: 403 };
+  }
+  return { allowed_roles: input.allowed_roles };
+}
+
+function decideUserRole(
+  input: { role?: AllowedRole },
+  current: AllowedRole,
+  actor: string,
+  ownerId: string | undefined,
+): { role: AllowedRole } | { error: string; status: 403 } {
+  if (input.role === undefined) return { role: current };
+  if (input.role !== current && !isChatOwner(actor, ownerId)) {
+    return { error: "forbidden", status: 403 };
+  }
+  return { role: input.role };
+}
+
+function requiredRole(value: unknown): AllowedRole | FieldError {
+  if (typeof value !== "string" || !ROLES.includes(value as AllowedRole)) {
+    return { error: "role must be standard, premium, vip, or vvip" };
+  }
+  return value as AllowedRole;
+}
+
+function optionalRole(value: unknown): AllowedRole | undefined | FieldError {
+  if (value === undefined) return undefined;
+  return requiredRole(value);
+}
+
+function optionalAllowedRoles(
+  value: unknown,
+): AllowedRole[] | undefined | FieldError {
+  if (value === undefined) return undefined;
+  return requiredAllowedRoles(value);
+}
+
+function requiredAllowedRoles(value: unknown): AllowedRole[] | FieldError {
+  if (!Array.isArray(value)) return { error: "allowed_roles must be an array" };
+  const roles: AllowedRole[] = [];
+  for (const item of value) {
+    if (typeof item !== "string" || !ROLES.includes(item as AllowedRole)) {
+      return {
+        error: "allowed_roles item must be standard, premium, vip, or vvip",
+      };
+    }
+    const role = item as AllowedRole;
+    if (roles.includes(role)) {
+      return { error: "allowed_roles item must not be repeated" };
+    }
+    roles.push(role);
+  }
+  return roles;
+}
+
+function sameAllowedRoles(left: AllowedRole[], right: AllowedRole[]): boolean {
+  if (left.length !== right.length) return false;
+  const rightSet = new Set(right);
+  return left.every((role) => rightSet.has(role));
+}
+
+function parseStoredAllowedRoles(value: string): AllowedRole[] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return ["standard"];
+    const roles: AllowedRole[] = [];
+    const seen = new Set<string>();
+    for (const item of parsed) {
+      if (typeof item !== "string" || !ROLES.includes(item as AllowedRole)) {
+        return ["standard"];
+      }
+      if (seen.has(item)) return ["standard"];
+      seen.add(item);
+      roles.push(item as AllowedRole);
+    }
+    return roles;
+  } catch {
+    return ["standard"];
+  }
 }
 
 function optionalLinks(
@@ -1217,6 +1394,7 @@ async function insertMessage(
     body: string;
     secret: number;
     links: string;
+    allowed_roles: string;
     pinned: number;
     pin_rank: number | null;
     created_at: number;
@@ -1226,8 +1404,8 @@ async function insertMessage(
 ): Promise<number | null> {
   const inserted = await db
     .prepare(
-      `INSERT INTO messages (user_id, body, secret, links, pinned, pin_rank, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO messages (user_id, body, secret, links, allowed_roles, pinned, pin_rank, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING id`,
     )
     .bind(
@@ -1235,6 +1413,7 @@ async function insertMessage(
       message.body,
       message.secret,
       message.links,
+      message.allowed_roles,
       message.pinned,
       message.pin_rank,
       message.created_at,

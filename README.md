@@ -691,7 +691,11 @@ Chat tables live in the same `commonvocab` D1 database. Every `/users`, `/messag
 
 The acting person is `user_id` in the JSON body, or the `user_id` query parameter on DELETE and on reads. That id must start with `user_`. Edit and delete succeed for the author, or for the user whose id matches `CHAT_OWNER_USER_ID`.
 
+`POST /users` requires `{ id, display_name, role }`. `role` must be `standard`, `premium`, `vip`, or `vvip`. Only the chat owner can change a user’s role on `PUT /users/:id`. Omit `role` on that PUT and the stored role stays.
+
 `GET /messages`, `GET /messages/:id`, `GET /messages/:id/replies`, `GET /messages/:id/likes`, and `GET /replies/:id` require `?user_id=`. The user must already exist.
+
+`allowed_roles` is an optional array on a message: `standard`, `premium`, `vip`, and `vvip`. Omit on create stores `["standard"]`. Only the chat owner can set it on create, on PUT, or with `PATCH /messages/:id` `{ user_id, allowed_roles }`. A non-owner who sends a different list gets 403. Reads return a message only when the viewer is the chat owner or their stored `role` is in that list. Authors do not bypass the list. `[]` means only the chat owner can see the message.
 
 `links` is an optional array on creating or editing a message. Each item has `id`, `text`, `url`, and `note`. Omitted on create stores `[]`. Omitted on edit leaves the current list. `url` must start with `http://` or `https://`. Replies do not have links.
 
@@ -703,7 +707,7 @@ Filter the list with `GET /messages?user_id=&tags=grammar,vocab`. A message matc
 
 `GET /messages` stays newest first. Load the pins directly with `GET /messages?user_id=&pinned=true`. Any existing user can call it. The rows are pinned messages that person can see, ordered by `pin_rank`, and `limit` and `offset` still apply. `pinned=false` is rejected. A secret pin stays visible only to its author and the chat owner.
 
-Change only the pin with `PATCH /messages/:id`. The body accepts `user_id` plus `pinned` and/or `pin_rank`. `body`, `secret`, `links`, and `tags` are rejected. The message text stays as stored.
+Change only the pin or roles with `PATCH /messages/:id`. The body accepts `user_id` plus at least one of `pinned`, `pin_rank`, or `allowed_roles`. `body`, `secret`, `links`, and `tags` are rejected. The message text stays as stored.
 
 `secret` is an optional boolean on creating or editing a message or reply. Omitted on create means public. Omitted on edit leaves the current value. A secret message is visible to its author and the chat owner. A secret reply is visible to its author, the parent message’s author, and the chat owner. Other callers do not see it in lists, and a direct fetch returns 404. Only someone who can see a message can reply to it or like it.
 
