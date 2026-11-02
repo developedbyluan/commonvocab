@@ -328,9 +328,13 @@ messages.get("/", async (c) => {
     const binds: Array<string | number> = [viewer.id, owner, viewer.role];
     let sql = `${MESSAGE_SELECT}
        WHERE (m.secret = 0 OR m.user_id = ?1 OR ?1 = ?2)
-         AND (?1 = ?2 OR EXISTS (
-           SELECT 1 FROM json_each(m.allowed_roles) WHERE value = ?3
-         ))`;
+         AND (
+           m.secret = 1
+           OR ?1 = ?2
+           OR EXISTS (
+             SELECT 1 FROM json_each(m.allowed_roles) WHERE value = ?3
+           )
+         )`;
     if (pinnedOnly) sql += ` AND m.pinned = 1`;
     if (resolved.length > 0) {
       const marks = resolved.map((_, index) => `?${binds.length + index + 1}`).join(", ");
@@ -883,9 +887,7 @@ function canSeeMessage(
   allowedRolesJson: string,
 ): boolean {
   if (secret === 1) {
-    if (!(viewer === author || (owner.length > 0 && viewer === owner))) {
-      return false;
-    }
+    return viewer === author || (owner.length > 0 && viewer === owner);
   }
   if (owner.length > 0 && viewer === owner) return true;
   return parseStoredAllowedRoles(allowedRolesJson).includes(viewerRole);
