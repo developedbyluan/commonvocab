@@ -695,7 +695,7 @@ The acting person is `user_id` in the JSON body, or the `user_id` query paramete
 
 `GET /messages`, `GET /messages/:id`, `GET /messages/:id/replies`, `GET /messages/:id/likes`, and `GET /replies/:id` require `?user_id=`. The user must already exist.
 
-`allowed_roles` is an optional array on a message: `standard`, `premium`, `vip`, and `vvip`. Omit on create stores `["standard"]`. Only the chat owner can set it on create, on PUT, or with `PATCH /messages/:id` `{ user_id, allowed_roles }`. A non-owner who sends a different list gets 403. Reads return a message only when the viewer is the chat owner or their stored `role` is in that list. Authors do not bypass the list. `[]` means only the chat owner can see the message.
+`allowed_roles` is an optional array on a message: `standard`, `premium`, `vip`, and `vvip`. Omit on create stores `["standard"]`. Only the chat owner can set it on create, on PUT, or with `PATCH /messages/:id` `{ user_id, allowed_roles }`. A non-owner who sends a different list gets 403. The role gate applies only when `secret` is false: the chat owner always sees a public message, and everyone else needs their stored `role` in that list. Authors do not bypass the list on public messages. `[]` means only the chat owner can see a public message. A secret message ignores `allowed_roles` and stays visible only to its author and the chat owner.
 
 `links` is an optional array on creating or editing a message. Each item has `id`, `text`, `url`, and `note`. Omitted on create stores `[]`. Omitted on edit leaves the current list. `url` must start with `http://` or `https://`. Replies do not have links.
 
