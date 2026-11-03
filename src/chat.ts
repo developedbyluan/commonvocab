@@ -47,6 +47,7 @@ type MessageRow = {
   pinned: number;
   pin_rank: number | null;
   pinned_range: string | null;
+  status_code: number | null;
   created_at: number;
   updated_at: number;
   reply_count: number;
@@ -90,7 +91,7 @@ type ChatContext = {
   json: (body: unknown, status?: number) => Response;
 };
 
-const MESSAGE_SELECT = `SELECT m.id, m.user_id, u.display_name, m.body, m.secret, m.links, m.allowed_roles, m.pinned, m.pin_rank, m.pinned_range, m.created_at, m.updated_at,
+const MESSAGE_SELECT = `SELECT m.id, m.user_id, u.display_name, m.body, m.secret, m.links, m.allowed_roles, m.pinned, m.pin_rank, m.pinned_range, m.status_code, m.created_at, m.updated_at,
        (SELECT COUNT(*) FROM replies r
         WHERE r.message_id = m.id
           AND (r.secret = 0 OR r.user_id = ?1 OR m.user_id = ?1 OR ?1 = ?2)
@@ -296,6 +297,15 @@ messages.post("/", async (c) => {
       c.env.CHAT_OWNER_USER_ID,
     );
     if ("status" in range) return c.json({ error: range.error }, range.status);
+    const statusCode = decideStatusCode(
+      input,
+      null,
+      input.user_id,
+      c.env.CHAT_OWNER_USER_ID,
+    );
+    if ("status" in statusCode) {
+      return c.json({ error: statusCode.error }, statusCode.status);
+    }
     const resolved = await resolveTagNames(c.env.DB, tagNames ?? []);
     if (isFieldError(resolved)) return c.json(resolved, 400);
     const now = unixSeconds();
@@ -313,6 +323,7 @@ messages.post("/", async (c) => {
           range.pinned_range === null
             ? null
             : JSON.stringify(range.pinned_range),
+        status_code: statusCode.status_code,
         created_at: now,
         updated_at: now,
       },
@@ -609,14 +620,24 @@ messages.patch("/:id", async (c) => {
       c.env.CHAT_OWNER_USER_ID,
     );
     if ("status" in range) return c.json({ error: range.error }, range.status);
+    const statusCode = decideStatusCode(
+      input,
+      row.status_code,
+      input.user_id,
+      c.env.CHAT_OWNER_USER_ID,
+    );
+    if ("status" in statusCode) {
+      return c.json({ error: statusCode.error }, statusCode.status);
+    }
     await c.env.DB.prepare(
-      `UPDATE messages SET pinned = ?, pin_rank = ?, allowed_roles = ?, pinned_range = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE messages SET pinned = ?, pin_rank = ?, allowed_roles = ?, pinned_range = ?, status_code = ?, updated_at = ? WHERE id = ?`,
     )
       .bind(
         pin.pinned,
         pin.pin_rank,
         JSON.stringify(roles.allowed_roles),
         range.pinned_range === null ? null : JSON.stringify(range.pinned_range),
+        statusCode.status_code,
         Math.max(unixSeconds(), row.created_at),
         id,
       )
@@ -665,6 +686,15 @@ messages.put("/:id", async (c) => {
       c.env.CHAT_OWNER_USER_ID,
     );
     if ("status" in range) return c.json({ error: range.error }, range.status);
+    const statusCode = decideStatusCode(
+      input,
+      row.status_code,
+      input.user_id,
+      c.env.CHAT_OWNER_USER_ID,
+    );
+    if ("status" in statusCode) {
+      return c.json({ error: statusCode.error }, statusCode.status);
+    }
     const resolved =
       tagNames === undefined ? undefined : await resolveTagNames(c.env.DB, tagNames);
     if (resolved && isFieldError(resolved)) return c.json(resolved, 400);
@@ -673,7 +703,7 @@ messages.put("/:id", async (c) => {
       input.links === undefined ? row.links : JSON.stringify(input.links);
     const statements = [
       c.env.DB.prepare(
-        `UPDATE messages SET body = ?, secret = ?, links = ?, pinned = ?, pin_rank = ?, allowed_roles = ?, pinned_range = ?, updated_at = ? WHERE id = ?`,
+        `UPDATE messages SET body = ?, secret = ?, links = ?, pinned = ?, pin_rank = ?, allowed_roles = ?, pinned_range = ?, status_code = ?, updated_at = ? WHERE id = ?`,
       ).bind(
         input.body,
         secret,
@@ -682,6 +712,7 @@ messages.put("/:id", async (c) => {
         pin.pin_rank,
         JSON.stringify(roles.allowed_roles),
         range.pinned_range === null ? null : JSON.stringify(range.pinned_range),
+        statusCode.status_code,
         Math.max(unixSeconds(), row.created_at),
         id,
       ),
@@ -892,6 +923,7 @@ function presentMessage(row: MessageRow) {
     pinned: row.pinned === 1,
     pin_rank: row.pin_rank,
     pinned_range: parseStoredPinnedRange(row.pinned_range),
+    status_code: row.status_code,
   };
 }
 
@@ -1091,6 +1123,7 @@ function parsePinPatch(
       pin_rank?: number;
       allowed_roles?: AllowedRole[];
       pinned_range?: PinnedRange | null;
+      status_code?: number | null;
     }
   | FieldError {
   const body = jsonObject(value);
@@ -1108,14 +1141,18 @@ function parsePinPatch(
   if (isFieldError(allowedRoles)) return allowedRoles;
   const pinnedRange = optionalPinnedRange(body.pinned_range);
   if (isFieldError(pinnedRange)) return pinnedRange;
+  const statusCode = optionalStatusCode(body.status_code);
+  if (isFieldError(statusCode)) return statusCode;
   if (
     pinned === undefined &&
     pinRank === undefined &&
     allowedRoles === undefined &&
-    pinnedRange === undefined
+    pinnedRange === undefined &&
+    statusCode === undefined
   ) {
     return {
-      error: "pinned, pin_rank, allowed_roles, or pinned_range is required",
+      error:
+        "pinned, pin_rank, allowed_roles, pinned_range, or status_code is required",
     };
   }
   return {
@@ -1124,6 +1161,7 @@ function parsePinPatch(
     pin_rank: pinRank,
     allowed_roles: allowedRoles,
     pinned_range: pinnedRange,
+    status_code: statusCode,
   };
 }
 
@@ -1139,6 +1177,7 @@ function parseAuthorBody(
       pin_rank?: number;
       allowed_roles?: AllowedRole[];
       pinned_range?: PinnedRange | null;
+      status_code?: number | null;
     }
   | FieldError {
   const actor = parseActor(value);
@@ -1159,6 +1198,8 @@ function parseAuthorBody(
   if (isFieldError(allowedRoles)) return allowedRoles;
   const pinnedRange = optionalPinnedRange(body.pinned_range);
   if (isFieldError(pinnedRange)) return pinnedRange;
+  const statusCode = optionalStatusCode(body.status_code);
+  if (isFieldError(statusCode)) return statusCode;
   return {
     user_id: actor.user_id,
     body: text,
@@ -1168,6 +1209,7 @@ function parseAuthorBody(
     pin_rank: pinRank,
     allowed_roles: allowedRoles,
     pinned_range: pinnedRange,
+    status_code: statusCode,
   };
 }
 
@@ -1260,6 +1302,37 @@ function decidePinnedRange(
     return { error: "forbidden", status: 403 };
   }
   return { pinned_range: input.pinned_range };
+}
+
+function decideStatusCode(
+  input: { status_code?: number | null },
+  current: number | null,
+  actor: string,
+  ownerId: string | undefined,
+):
+  | { status_code: number | null }
+  | { error: string; status: 400 | 403 } {
+  if (input.status_code === undefined) {
+    return { status_code: current };
+  }
+  if (input.status_code !== current && !isChatOwner(actor, ownerId)) {
+    return { error: "forbidden", status: 403 };
+  }
+  return { status_code: input.status_code };
+}
+
+function optionalStatusCode(
+  value: unknown,
+): number | null | undefined | FieldError {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    return { error: "status_code must be an integer" };
+  }
+  if (value < 0 || value > 9) {
+    return { error: "status_code must be between 0 and 9" };
+  }
+  return value;
 }
 
 function optionalPinnedRange(
@@ -1534,6 +1607,7 @@ async function insertMessage(
     pinned: number;
     pin_rank: number | null;
     pinned_range: string | null;
+    status_code: number | null;
     created_at: number;
     updated_at: number;
   },
@@ -1541,8 +1615,8 @@ async function insertMessage(
 ): Promise<number | null> {
   const inserted = await db
     .prepare(
-      `INSERT INTO messages (user_id, body, secret, links, allowed_roles, pinned, pin_rank, pinned_range, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO messages (user_id, body, secret, links, allowed_roles, pinned, pin_rank, pinned_range, status_code, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING id`,
     )
     .bind(
@@ -1554,6 +1628,7 @@ async function insertMessage(
       message.pinned,
       message.pin_rank,
       message.pinned_range,
+      message.status_code,
       message.created_at,
       message.updated_at,
     )
