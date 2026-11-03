@@ -48,6 +48,8 @@ type MessageRow = {
   pin_rank: number | null;
   pinned_range: string | null;
   status_code: number | null;
+  media_id: number | null;
+  sentence_id: number | null;
   created_at: number;
   updated_at: number;
   reply_count: number;
@@ -91,7 +93,7 @@ type ChatContext = {
   json: (body: unknown, status?: number) => Response;
 };
 
-const MESSAGE_SELECT = `SELECT m.id, m.user_id, u.display_name, m.body, m.secret, m.links, m.allowed_roles, m.pinned, m.pin_rank, m.pinned_range, m.status_code, m.created_at, m.updated_at,
+const MESSAGE_SELECT = `SELECT m.id, m.user_id, u.display_name, m.body, m.secret, m.links, m.allowed_roles, m.pinned, m.pin_rank, m.pinned_range, m.status_code, m.media_id, m.sentence_id, m.created_at, m.updated_at,
        (SELECT COUNT(*) FROM replies r
         WHERE r.message_id = m.id
           AND (r.secret = 0 OR r.user_id = ?1 OR m.user_id = ?1 OR ?1 = ?2)
@@ -324,6 +326,8 @@ messages.post("/", async (c) => {
             ? null
             : JSON.stringify(range.pinned_range),
         status_code: statusCode.status_code,
+        media_id: input.media_id ?? null,
+        sentence_id: input.sentence_id ?? null,
         created_at: now,
         updated_at: now,
       },
@@ -348,6 +352,12 @@ messages.get("/", async (c) => {
   if (isFieldError(tagNames)) return c.json(tagNames, 400);
   const pinnedOnly = parsePinnedFilter(c.req.query("pinned"));
   if (isFieldError(pinnedOnly)) return c.json(pinnedOnly, 400);
+  const authorId = parseAuthorIdFilter(c.req.query("author_id"));
+  if (isFieldError(authorId)) return c.json(authorId, 400);
+  const mediaId = parseMediaIdFilter(c.req.query("media_id"));
+  if (isFieldError(mediaId)) return c.json(mediaId, 400);
+  const sentenceId = parseSentenceIdFilter(c.req.query("sentence_id"));
+  if (isFieldError(sentenceId)) return c.json(sentenceId, 400);
 
   try {
     const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
@@ -364,6 +374,18 @@ messages.get("/", async (c) => {
            )
          )`;
     if (pinnedOnly) sql += ` AND m.pinned = 1`;
+    if (authorId !== undefined) {
+      binds.push(authorId);
+      sql += ` AND m.user_id = ?${binds.length}`;
+    }
+    if (mediaId !== undefined) {
+      binds.push(mediaId);
+      sql += ` AND m.media_id = ?${binds.length}`;
+    }
+    if (sentenceId !== undefined) {
+      binds.push(sentenceId);
+      sql += ` AND m.sentence_id = ?${binds.length}`;
+    }
     if (resolved.length > 0) {
       const marks = resolved.map((_, index) => `?${binds.length + index + 1}`).join(", ");
       sql += `
@@ -701,9 +723,13 @@ messages.put("/:id", async (c) => {
     const secret = input.secret === undefined ? row.secret : input.secret ? 1 : 0;
     const links =
       input.links === undefined ? row.links : JSON.stringify(input.links);
+    const mediaId =
+      input.media_id === undefined ? row.media_id : input.media_id;
+    const sentenceId =
+      input.sentence_id === undefined ? row.sentence_id : input.sentence_id;
     const statements = [
       c.env.DB.prepare(
-        `UPDATE messages SET body = ?, secret = ?, links = ?, pinned = ?, pin_rank = ?, allowed_roles = ?, pinned_range = ?, status_code = ?, updated_at = ? WHERE id = ?`,
+        `UPDATE messages SET body = ?, secret = ?, links = ?, pinned = ?, pin_rank = ?, allowed_roles = ?, pinned_range = ?, status_code = ?, media_id = ?, sentence_id = ?, updated_at = ? WHERE id = ?`,
       ).bind(
         input.body,
         secret,
@@ -713,6 +739,8 @@ messages.put("/:id", async (c) => {
         JSON.stringify(roles.allowed_roles),
         range.pinned_range === null ? null : JSON.stringify(range.pinned_range),
         statusCode.status_code,
+        mediaId,
+        sentenceId,
         Math.max(unixSeconds(), row.created_at),
         id,
       ),
@@ -924,6 +952,8 @@ function presentMessage(row: MessageRow) {
     pin_rank: row.pin_rank,
     pinned_range: parseStoredPinnedRange(row.pinned_range),
     status_code: row.status_code,
+    media_id: row.media_id,
+    sentence_id: row.sentence_id,
   };
 }
 
@@ -1128,7 +1158,14 @@ function parsePinPatch(
   | FieldError {
   const body = jsonObject(value);
   if (isFieldError(body)) return body;
-  if ("body" in body || "secret" in body || "links" in body || "tags" in body) {
+  if (
+    "body" in body ||
+    "secret" in body ||
+    "links" in body ||
+    "tags" in body ||
+    "media_id" in body ||
+    "sentence_id" in body
+  ) {
     return { error: "body, secret, and links cannot be patched" };
   }
   const userId = requiredUserId(body.user_id);
@@ -1178,6 +1215,8 @@ function parseAuthorBody(
       allowed_roles?: AllowedRole[];
       pinned_range?: PinnedRange | null;
       status_code?: number | null;
+      media_id?: number | null;
+      sentence_id?: number | null;
     }
   | FieldError {
   const actor = parseActor(value);
@@ -1200,6 +1239,10 @@ function parseAuthorBody(
   if (isFieldError(pinnedRange)) return pinnedRange;
   const statusCode = optionalStatusCode(body.status_code);
   if (isFieldError(statusCode)) return statusCode;
+  const mediaId = optionalMediaId(body.media_id);
+  if (isFieldError(mediaId)) return mediaId;
+  const sentenceId = optionalSentenceId(body.sentence_id);
+  if (isFieldError(sentenceId)) return sentenceId;
   return {
     user_id: actor.user_id,
     body: text,
@@ -1210,6 +1253,8 @@ function parseAuthorBody(
     allowed_roles: allowedRoles,
     pinned_range: pinnedRange,
     status_code: statusCode,
+    media_id: mediaId,
+    sentence_id: sentenceId,
   };
 }
 
@@ -1333,6 +1378,69 @@ function optionalStatusCode(
     return { error: "status_code must be between 0 and 9" };
   }
   return value;
+}
+
+function optionalMediaId(
+  value: unknown,
+): number | null | undefined | FieldError {
+  return optionalNonNegativeId(value, "media_id");
+}
+
+function optionalSentenceId(
+  value: unknown,
+): number | null | undefined | FieldError {
+  return optionalNonNegativeId(value, "sentence_id");
+}
+
+function optionalNonNegativeId(
+  value: unknown,
+  field: string,
+): number | null | undefined | FieldError {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    return { error: `${field} must be an integer` };
+  }
+  if (value < 0) {
+    return { error: `${field} must be greater than or equal to 0` };
+  }
+  return value;
+}
+
+function parseAuthorIdFilter(
+  value: string | undefined,
+): string | undefined | FieldError {
+  if (value === undefined) return undefined;
+  const parsed = requiredUserId(value);
+  if (isFieldError(parsed)) {
+    return { error: parsed.error.replace(/^user_id/, "author_id") };
+  }
+  return parsed;
+}
+
+function parseMediaIdFilter(
+  value: string | undefined,
+): number | undefined | FieldError {
+  return parseNonNegativeIdFilter(value, "media_id");
+}
+
+function parseSentenceIdFilter(
+  value: string | undefined,
+): number | undefined | FieldError {
+  return parseNonNegativeIdFilter(value, "sentence_id");
+}
+
+function parseNonNegativeIdFilter(
+  value: string | undefined,
+  field: string,
+): number | undefined | FieldError {
+  if (value === undefined) return undefined;
+  if (!/^\d+$/.test(value)) return { error: `${field} must be an integer` };
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    return { error: `${field} must be greater than or equal to 0` };
+  }
+  return parsed;
 }
 
 function optionalPinnedRange(
@@ -1608,6 +1716,8 @@ async function insertMessage(
     pin_rank: number | null;
     pinned_range: string | null;
     status_code: number | null;
+    media_id: number | null;
+    sentence_id: number | null;
     created_at: number;
     updated_at: number;
   },
@@ -1615,8 +1725,8 @@ async function insertMessage(
 ): Promise<number | null> {
   const inserted = await db
     .prepare(
-      `INSERT INTO messages (user_id, body, secret, links, allowed_roles, pinned, pin_rank, pinned_range, status_code, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO messages (user_id, body, secret, links, allowed_roles, pinned, pin_rank, pinned_range, status_code, media_id, sentence_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING id`,
     )
     .bind(
@@ -1629,6 +1739,8 @@ async function insertMessage(
       message.pin_rank,
       message.pinned_range,
       message.status_code,
+      message.media_id,
+      message.sentence_id,
       message.created_at,
       message.updated_at,
     )

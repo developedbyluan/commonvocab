@@ -701,7 +701,7 @@ The acting person is `user_id` in the JSON body, or the `user_id` query paramete
 
 `tags` is an optional array of names on creating or editing a message. The chat owner creates the allowed names with `POST /tags` `{ user_id, name }`. `GET /tags?user_id=` lists them. `DELETE /tags/:id?user_id=` removes a name and detaches it from messages. Only the owner can create or delete a tag. A message can have at most 10 tags, and each name must already be in the catalog. Omit `tags` on create and the message has none. Omit `tags` on edit and the current tags stay. Sending `tags` replaces the list.
 
-Filter the list with `GET /messages?user_id=&tags=grammar,vocab`. A message matches when it has any of those tags. Omit `tags` and the list is not filtered by tag. `limit` defaults to 50, with a maximum of 100, and `offset` defaults to 0.
+Filter the list with `GET /messages?user_id=&tags=grammar,vocab`. A message matches when it has any of those tags. Omit `tags` and the list is not filtered by tag. Optional filters `author_id`, `media_id`, and `sentence_id` narrow the list further and combine with AND. `author_id` must start with `user_` and matches the message author. `media_id` and `sentence_id` are integers ≥ 0. An unknown `author_id` returns an empty list. `limit` defaults to 50, with a maximum of 100, and `offset` defaults to 0.
 
 `pinned` is an optional boolean and `pin_rank` is an optional integer of 1 or more. Only the chat owner can set them. `1` is more important than `2`. Unpinning sets `pin_rank` to `null`. Omitting both fields on a PUT leaves the current pin.
 
@@ -709,9 +709,11 @@ Filter the list with `GET /messages?user_id=&tags=grammar,vocab`. A message matc
 
 `status_code` is an optional integer from `0` to `9`. Only the chat owner can set it. Omit on create stores `null`. Omit on PUT leaves the current value. Send `null` to clear it.
 
+`media_id` and `sentence_id` are optional integers ≥ 0 on creating or editing a message. The author or the chat owner can set them. Omit on create stores `null` for each. Omit on PUT leaves the current value. Send `null` to clear. Either field may be set alone. They are independent integers with no foreign key to entries.
+
 `GET /messages` stays newest first. Load the pins directly with `GET /messages?user_id=&pinned=true`. Any existing user can call it. The rows are pinned messages that person can see, ordered by `pin_rank`, and `limit` and `offset` still apply. `pinned=false` is rejected. A secret pin stays visible only to its author and the chat owner.
 
-Change only the pin, roles, range, or status with `PATCH /messages/:id`. The body accepts `user_id` plus at least one of `pinned`, `pin_rank`, `allowed_roles`, `pinned_range`, or `status_code`. `body`, `secret`, `links`, and `tags` are rejected. The message text stays as stored.
+Change only the pin, roles, range, or status with `PATCH /messages/:id`. The body accepts `user_id` plus at least one of `pinned`, `pin_rank`, `allowed_roles`, `pinned_range`, or `status_code`. `body`, `secret`, `links`, `tags`, `media_id`, and `sentence_id` are rejected. The message text stays as stored.
 
 `secret` is an optional boolean on creating or editing a message or reply. Omitted on create means public. Omitted on edit leaves the current value. A secret message is visible to its author and the chat owner. A secret reply is visible to its author, the parent message’s author, and the chat owner. Other callers do not see it in lists, and a direct fetch returns 404. Only someone who can see a message can reply to it or like it.
 
