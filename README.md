@@ -705,9 +705,11 @@ Filter the list with `GET /messages?user_id=&tags=grammar,vocab`. A message matc
 
 `pinned` is an optional boolean and `pin_rank` is an optional integer of 1 or more. Only the chat owner can set them. `1` is more important than `2`. Unpinning sets `pin_rank` to `null`. Omitting both fields on a PUT leaves the current pin.
 
+`pinned_range` is an optional object `{ "start": number, "end": number }` of unix seconds for the client. Only the chat owner can set it. Both values must be integers ≥ 0 with `start <= end`. Omit on create stores `null`. Omit on PUT leaves the current value. Send `null` to clear it. It is independent of `pinned` and `pin_rank`.
+
 `GET /messages` stays newest first. Load the pins directly with `GET /messages?user_id=&pinned=true`. Any existing user can call it. The rows are pinned messages that person can see, ordered by `pin_rank`, and `limit` and `offset` still apply. `pinned=false` is rejected. A secret pin stays visible only to its author and the chat owner.
 
-Change only the pin or roles with `PATCH /messages/:id`. The body accepts `user_id` plus at least one of `pinned`, `pin_rank`, or `allowed_roles`. `body`, `secret`, `links`, and `tags` are rejected. The message text stays as stored.
+Change only the pin, roles, or range with `PATCH /messages/:id`. The body accepts `user_id` plus at least one of `pinned`, `pin_rank`, `allowed_roles`, or `pinned_range`. `body`, `secret`, `links`, and `tags` are rejected. The message text stays as stored.
 
 `secret` is an optional boolean on creating or editing a message or reply. Omitted on create means public. Omitted on edit leaves the current value. A secret message is visible to its author and the chat owner. A secret reply is visible to its author, the parent message’s author, and the chat owner. Other callers do not see it in lists, and a direct fetch returns 404. Only someone who can see a message can reply to it or like it.
 
