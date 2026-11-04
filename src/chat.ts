@@ -363,16 +363,9 @@ messages.get("/", async (c) => {
     const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
     const resolved = tagNames ? await resolveTagNames(c.env.DB, tagNames) : [];
     if (isFieldError(resolved)) return c.json(resolved, 400);
-    const binds: Array<string | number> = [viewer.id, owner, viewer.role];
+    const binds: Array<string | number> = [viewer.id, owner];
     let sql = `${MESSAGE_SELECT}
-       WHERE (m.secret = 0 OR m.user_id = ?1 OR ?1 = ?2)
-         AND (
-           m.secret = 1
-           OR ?1 = ?2
-           OR EXISTS (
-             SELECT 1 FROM json_each(m.allowed_roles) WHERE value = ?3
-           )
-         )`;
+       WHERE (m.secret = 0 OR m.user_id = ?1 OR ?1 = ?2)`;
     if (pinnedOnly) sql += ` AND m.pinned = 1`;
     if (authorId !== undefined) {
       binds.push(authorId);
@@ -404,7 +397,11 @@ messages.get("/", async (c) => {
        LIMIT ?${binds.length + 1} OFFSET ?${binds.length + 2}`;
     binds.push(bounds.limit, bounds.offset);
     const { results } = await c.env.DB.prepare(sql).bind(...binds).all<MessageRow>();
-    return c.json(results.map(presentMessage));
+    return c.json(
+      results.map((row) =>
+        presentMessage(row, canSeeMessageRow(viewer, row, owner)),
+      ),
+    );
   } catch (error) {
     return databaseError(c, error);
   }
@@ -941,20 +938,38 @@ tags.delete("/:id", async (c) => {
   }
 });
 
-function presentMessage(row: MessageRow) {
-  return {
+function presentMessage(row: MessageRow, full = true) {
+  const links = parseStoredLinks(row.links);
+  const base = {
     ...row,
     secret: row.secret === 1,
-    links: parseStoredLinks(row.links),
     tags: parseStoredTags(row.tags),
     allowed_roles: parseStoredAllowedRoles(row.allowed_roles),
     pinned: row.pinned === 1,
     pin_rank: row.pin_rank,
     pinned_range: parseStoredPinnedRange(row.pinned_range),
     status_code: row.status_code,
-    media_id: row.media_id,
-    sentence_id: row.sentence_id,
   };
+  if (full) {
+    return {
+      ...base,
+      links,
+      media_id: row.media_id,
+      sentence_id: row.sentence_id,
+    };
+  }
+  return {
+    ...base,
+    body: redactBody(row.body),
+    links: links.map((link) => ({ id: link.id, text: link.text })),
+    media_id: null,
+    sentence_id: null,
+  };
+}
+
+function redactBody(body: string): string {
+  if (body.length <= 40) return body;
+  return `${body.slice(0, 40)}…`;
 }
 
 function presentReply(row: ReplyRow) {
@@ -974,6 +989,18 @@ function chatOwner(ownerId: string | undefined): string {
   return typeof ownerId === "string" ? ownerId : "";
 }
 
+function canListMessage(
+  viewer: string,
+  author: string,
+  secret: number,
+  owner: string,
+): boolean {
+  if (secret === 1) {
+    return viewer === author || (owner.length > 0 && viewer === owner);
+  }
+  return true;
+}
+
 function canSeeMessage(
   viewer: string,
   author: string,
@@ -982,9 +1009,8 @@ function canSeeMessage(
   viewerRole: AllowedRole,
   allowedRolesJson: string,
 ): boolean {
-  if (secret === 1) {
-    return viewer === author || (owner.length > 0 && viewer === owner);
-  }
+  if (!canListMessage(viewer, author, secret, owner)) return false;
+  if (secret === 1) return true;
   if (owner.length > 0 && viewer === owner) return true;
   return parseStoredAllowedRoles(allowedRolesJson).includes(viewerRole);
 }
