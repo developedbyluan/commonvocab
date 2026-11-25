@@ -352,6 +352,11 @@ messages.get("/", async (c) => {
   if (isFieldError(tagNames)) return c.json(tagNames, 400);
   const pinnedOnly = parsePinnedFilter(c.req.query("pinned"));
   if (isFieldError(pinnedOnly)) return c.json(pinnedOnly, 400);
+  const includeReplies = parseIncludeFilter(c.req.query("include"));
+  if (isFieldError(includeReplies)) return c.json(includeReplies, 400);
+  if (includeReplies && !pinnedOnly) {
+    return c.json({ error: "include=replies requires pinned=true" }, 400);
+  }
   const authorId = parseAuthorIdFilter(c.req.query("author_id"));
   if (isFieldError(authorId)) return c.json(authorId, 400);
   const mediaId = parseMediaIdFilter(c.req.query("media_id"));
@@ -397,10 +402,42 @@ messages.get("/", async (c) => {
        LIMIT ?${binds.length + 1} OFFSET ?${binds.length + 2}`;
     binds.push(bounds.limit, bounds.offset);
     const { results } = await c.env.DB.prepare(sql).bind(...binds).all<MessageRow>();
+    if (!includeReplies) {
+      return c.json(
+        results.map((row) =>
+          presentMessage(row, canSeeMessageRow(viewer, row, owner)),
+        ),
+      );
+    }
+
+    const visibleIds = results
+      .filter((row) => canSeeMessageRow(viewer, row, owner))
+      .map((row) => row.id);
+    const repliesByMessage = new Map<number, ReturnType<typeof presentReply>[]>();
+    if (visibleIds.length > 0) {
+      const { results: replyRows } = await c.env.DB.prepare(
+        `${REPLY_SELECT}
+         JOIN messages m ON m.id = r.message_id
+         WHERE r.message_id IN (SELECT value FROM json_each(?1))
+           AND (r.secret = 0 OR r.user_id = ?2 OR m.user_id = ?2 OR ?2 = ?3)
+         ORDER BY r.message_id, r.id`,
+      )
+        .bind(JSON.stringify(visibleIds), viewer.id, owner)
+        .all<ReplyRow>();
+      for (const reply of replyRows) {
+        const list = repliesByMessage.get(reply.message_id) ?? [];
+        list.push(presentReply(reply));
+        repliesByMessage.set(reply.message_id, list);
+      }
+    }
     return c.json(
-      results.map((row) =>
-        presentMessage(row, canSeeMessageRow(viewer, row, owner)),
-      ),
+      results.map((row) => {
+        const full = canSeeMessageRow(viewer, row, owner);
+        return {
+          ...presentMessage(row, full),
+          replies: full ? repliesByMessage.get(row.id) ?? [] : [],
+        };
+      }),
     );
   } catch (error) {
     return databaseError(c, error);
@@ -1709,6 +1746,12 @@ function parsePinnedFilter(value: string | undefined): boolean | FieldError {
   if (value === undefined) return false;
   if (value === "true") return true;
   return { error: "pinned must be true" };
+}
+
+function parseIncludeFilter(value: string | undefined): boolean | FieldError {
+  if (value === undefined) return false;
+  if (value === "replies") return true;
+  return { error: "include must be replies" };
 }
 
 function tagNameList(value: unknown, field: string): string[] | FieldError {
