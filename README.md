@@ -713,6 +713,8 @@ Filter the list with `GET /messages?user_id=&tags=grammar,vocab`. A message matc
 
 `GET /messages` stays newest first. Load the pins directly with `GET /messages?user_id=&pinned=true`. Any existing user can call it. The rows are pinned messages that person can see, ordered by `pin_rank`, and `limit` and `offset` still apply. `pinned=false` is rejected. A secret pin stays visible only to its author and the chat owner.
 
+Add `include=replies` to that call (`GET /messages?user_id=&pinned=true&include=replies`) to get each pin with a `replies` array, oldest first, using the same reply visibility as `GET /messages/:id`. A pin the caller sees only in part gets `replies: []`. `include` requires `pinned=true`, and any value other than `replies` is rejected.
+
 Change only the pin, roles, range, or status with `PATCH /messages/:id`. The body accepts `user_id` plus at least one of `pinned`, `pin_rank`, `allowed_roles`, `pinned_range`, or `status_code`. `body`, `secret`, `links`, `tags`, `media_id`, and `sentence_id` are rejected. The message text stays as stored.
 
 `secret` is an optional boolean on creating or editing a message or reply. Omitted on create means public. Omitted on edit leaves the current value. A secret message is visible to its author and the chat owner. A secret reply is visible to its author, the parent message’s author, and the chat owner. Other callers do not see it in lists, and a direct fetch returns 404. Only someone with full access to a message can reply to it or like it.
