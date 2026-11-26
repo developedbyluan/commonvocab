@@ -1,4 +1,5 @@
 import { Hono, type MiddlewareHandler } from "hono";
+import { notifyNewPin, shouldAnnouncePin } from "./push";
 
 type FieldError = { error: string };
 
@@ -122,7 +123,7 @@ const messages = new Hono<{ Bindings: Bindings }>();
 const replies = new Hono<{ Bindings: Bindings }>();
 const tags = new Hono<{ Bindings: Bindings }>();
 
-const protect: MiddlewareHandler<{ Bindings: Bindings }> = async (c, next) => {
+export const protect: MiddlewareHandler<{ Bindings: Bindings }> = async (c, next) => {
   const ip = c.req.header("cf-connecting-ip") ?? "unknown";
   const limited = await c.env.CHAT_LIMITER.limit({ key: ip });
   if (!limited.success) return c.json({ error: "too many requests" }, 429);
@@ -337,6 +338,9 @@ messages.post("/", async (c) => {
     const owner = chatOwner(c.env.CHAT_OWNER_USER_ID);
     const created = await findMessage(c.env.DB, messageId, input.user_id, owner);
     if (!created) return c.json({ error: "message not found" }, 404);
+    if (shouldAnnouncePin(false, created.pinned === 1, range.pinned_range)) {
+      c.executionCtx.waitUntil(notifyNewPin(c.env, created, input.user_id));
+    }
     return c.json(presentMessage(created), 201);
   } catch (error) {
     return databaseError(c, error);
@@ -700,6 +704,9 @@ messages.patch("/:id", async (c) => {
       .run();
     const updated = await findMessage(c.env.DB, id, input.user_id, owner);
     if (!updated) return c.json({ error: "message not found" }, 404);
+    if (shouldAnnouncePin(row.pinned === 1, updated.pinned === 1, range.pinned_range)) {
+      c.executionCtx.waitUntil(notifyNewPin(c.env, updated, input.user_id));
+    }
     return c.json(presentMessage(updated));
   } catch (error) {
     return databaseError(c, error);
@@ -794,6 +801,9 @@ messages.put("/:id", async (c) => {
     await c.env.DB.batch(statements);
     const updated = await findMessage(c.env.DB, id, input.user_id, owner);
     if (!updated) return c.json({ error: "message not found" }, 404);
+    if (shouldAnnouncePin(row.pinned === 1, updated.pinned === 1, range.pinned_range)) {
+      c.executionCtx.waitUntil(notifyNewPin(c.env, updated, input.user_id));
+    }
     return c.json(presentMessage(updated));
   } catch (error) {
     return databaseError(c, error);

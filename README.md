@@ -744,3 +744,15 @@ The remote database is updated separately, after you confirm it:
 ```bash
 npx wrangler d1 migrations apply commonvocab --remote
 ```
+## 23. PUSH NOTIFICATIONS FOR NEW PINNED MESSAGES
+
+The Practice Offline app registers each phone's Expo push token, and the worker sends a "New event" push through Expo when a message becomes pinned. The full write-up is in `docs/push_notifications.md`.
+
+`POST /push-tokens` `{ user_id, token, provider: "expo", platform: "android" | "ios" }` registers a phone. A token that already exists moves to the new `user_id`. `DELETE /push-tokens?token=&user_id=` removes it, and returns 404 when nothing matches. Both use the chat Basic auth.
+
+Apply the migration (`0021_create_push_tokens.sql`) locally, then remotely after you confirm it:
+
+```bash
+npx wrangler d1 migrations apply commonvocab --local
+npx wrangler d1 migrations apply commonvocab --remote
+```
