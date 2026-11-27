@@ -750,6 +750,12 @@ The Practice Offline app registers each phone's Expo push token, and the worker 
 
 `POST /push-tokens` `{ user_id, token, provider: "expo", platform: "android" | "ios" }` registers a phone. A token that already exists moves to the new `user_id`. `DELETE /push-tokens?token=&user_id=` removes it, and returns 404 when nothing matches. Both use the chat Basic auth.
 
+Tokens registered with `provider: "fcm"` are sent straight to Firebase through the FCM HTTP v1 API, with the same title, body and data (`type: "new-pinned"`, `messageId` as a string, because FCM data values are strings) on the `new-events` channel. The worker reads the Firebase service account JSON from the `FIREBASE_SERVICE_ACCOUNT` secret. Without it, FCM tokens are skipped and a warning is logged. Tokens FCM reports as `UNREGISTERED` are deleted.
+
+```bash
+npx wrangler secret put FIREBASE_SERVICE_ACCOUNT < path/to/service-account.json
+```
+
 Apply the migration (`0021_create_push_tokens.sql`) locally, then remotely after you confirm it:
 
 ```bash
